@@ -1,0 +1,4 @@
+tcb
+*.o
+*.wav
+.vscode
