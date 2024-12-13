@@ -325,7 +325,7 @@ int main(int argc, char **argv)
         }
 
         ma_device_config deviceConfigPrimary = ma_device_config_init(ma_device_type_capture);
-        deviceConfigPrimary.capture.pDeviceID = &pCaptureDeviceInfos[1].id;
+        deviceConfigPrimary.capture.pDeviceID = &pCaptureDeviceInfos[primary_device].id;
         deviceConfigPrimary.capture.format = FORMAT;
         deviceConfigPrimary.capture.channels = CHANNELS;
         deviceConfigPrimary.sampleRate = SAMPLE_RATE;
@@ -355,7 +355,7 @@ int main(int argc, char **argv)
         }
 
         ma_device_config deviceConfigSecundary = ma_device_config_init(ma_device_type_capture);
-        deviceConfigSecundary.capture.pDeviceID = &pCaptureDeviceInfos[2].id;
+        deviceConfigSecundary.capture.pDeviceID = &pCaptureDeviceInfos[secondary_device].id;
         deviceConfigSecundary.capture.format = FORMAT;
         deviceConfigSecundary.capture.channels = CHANNELS;
         deviceConfigSecundary.sampleRate = SAMPLE_RATE;
@@ -391,7 +391,7 @@ int main(int argc, char **argv)
         struct mix_context rbs = {.rbPrimary = &rbPrimary, .rbSecondary = &rbSecondary, .encoder = &encoder};
 
         ma_device_config deviceConfigAux = ma_device_config_init(ma_device_type_playback);
-        deviceConfigAux.playback.pDeviceID = &pPlaybackDeviceInfos[1].id;
+        deviceConfigAux.playback.pDeviceID = &pPlaybackDeviceInfos[0].id;
         deviceConfigAux.playback.format = FORMAT;
         deviceConfigAux.playback.channels = CHANNELS;
         deviceConfigAux.sampleRate = SAMPLE_RATE;
