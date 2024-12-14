@@ -170,75 +170,78 @@ void rb_write_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma
     }
 }
 
-void rb_read_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uint32 frameCount)
+void *rb_read_thread(void *arg)
 {
+    struct mix_context *mixContext = (struct mix_context *)arg;
+    assert(mixContext != NULL);
 
-    struct mix_context *mixContext = (struct mix_context *)pDevice->pUserData;
-    MA_ASSERT(mixContext != NULL);
-
-    ma_uint32 framesToRead = frameCount;
-    ma_uint32 bytesPerFrame = ma_get_bytes_per_frame(pDevice->playback.format,
-                                                     pDevice->playback.channels);
+    ma_uint32 frameCountPrimary;
+    ma_uint32 frameCountSecondary;
+    ma_uint32 frameCount;
+    ma_uint32 bytesPerFrame = ma_get_bytes_per_frame(FORMAT, CHANNELS);
     ma_pcm_rb *rb = mixContext->rbPrimary;
+
     ma_pcm_rb *rbSecondary = mixContext->rbSecondary;
     ma_encoder *encoder = mixContext->encoder;
 
-    MA_ASSERT(encoder != NULL);
+    assert(encoder != NULL);
 
     void *rbRead = NULL;
     void *rbOtherRead = NULL;
 
-    ma_result rbPrimaryResult = ma_pcm_rb_acquire_read(rb, &frameCount, &rbRead);
-    ma_result rbSecondaryResult = ma_pcm_rb_acquire_read(rbSecondary, &frameCount, &rbOtherRead);
-
-    int16_t *mixedBuffer = malloc(frameCount * bytesPerFrame);
-    if (mixedBuffer == NULL)
+    while (1)
     {
-        printf("Memory allocation failed for mixed buffer.\n");
-        return;
-    }
+        frameCountPrimary = ma_pcm_rb_available_read(rb);
+        frameCountSecondary = ma_pcm_rb_available_read(rbSecondary);
 
-    if (rbPrimaryResult == MA_SUCCESS && rbSecondaryResult == MA_SUCCESS)
-    {
-        int16_t *rbBuffer = (int16_t *)rbRead;
-        int16_t *rbOtherBuffer = (int16_t *)rbOtherRead;
-
-        for (ma_uint32 i = 0; i < frameCount * pDevice->playback.channels; i++)
+        frameCount = ma_min(frameCountPrimary, frameCountSecondary);
+        if (frameCount > 0)
         {
-            int32_t mixedSample = ((int32_t)rbBuffer[i] + (int32_t)rbOtherBuffer[i]) / 2;
+            ma_result rbPrimaryResult = ma_pcm_rb_acquire_read(rb, &frameCount, &rbRead);
+            ma_result rbSecondaryResult = ma_pcm_rb_acquire_read(rbSecondary, &frameCount, &rbOtherRead);
 
-            mixedBuffer[i] = (int16_t)ma_clamp(mixedSample, -32768, 32767);
+            int16_t *mixedBuffer = malloc(frameCount * bytesPerFrame);
+            if (mixedBuffer == NULL)
+            {
+                printf("Memory allocation failed for mixed buffer.\n");
+                break;
+            }
+
+            if (rbPrimaryResult == MA_SUCCESS && rbSecondaryResult == MA_SUCCESS)
+            {
+                int16_t *rbBuffer = (int16_t *)rbRead;
+                int16_t *rbOtherBuffer = (int16_t *)rbOtherRead;
+
+                for (ma_uint32 i = 0; i < frameCount * CHANNELS; i++)
+                {
+                    int32_t mixedSample = ((int32_t)rbBuffer[i] + (int32_t)rbOtherBuffer[i]) / 2;
+                    mixedBuffer[i] = (int16_t)ma_clamp(mixedSample, -32768, 32767);
+                }
+
+                ma_uint64 framesWritten;
+                ma_encoder_write_pcm_frames(encoder, mixedBuffer, frameCount, &framesWritten);
+
+                ma_pcm_rb_commit_read(rb, frameCount);
+                ma_pcm_rb_commit_read(rbSecondary, frameCount);
+            }
+            else if (rbPrimaryResult == MA_SUCCESS)
+            {
+                ma_encoder_write_pcm_frames(encoder, rbRead, frameCount, NULL);
+                ma_pcm_rb_commit_read(rb, frameCount);
+            }
+            else if (rbSecondaryResult == MA_SUCCESS)
+            {
+                ma_encoder_write_pcm_frames(encoder, rbOtherRead, frameCount, NULL);
+                ma_pcm_rb_commit_read(rbSecondary, frameCount);
+            }
+
+            free(mixedBuffer);
         }
 
-        ma_encoder_write_pcm_frames(encoder, mixedBuffer, frameCount, NULL);
-
-        ma_pcm_rb_commit_read(rb, frameCount);
-        ma_pcm_rb_commit_read(rbSecondary, frameCount);
-
-        // printf("Encoded %u mixed frames.\n", frameCount);
-    }
-    else if (rbPrimaryResult == MA_SUCCESS)
-    {
-
-        ma_encoder_write_pcm_frames(encoder, rbRead, frameCount, NULL);
-        ma_pcm_rb_commit_read(rb, frameCount);
-
-        // printf("Encoded %u frames from first buffer.\n", frameCount);
-    }
-    else if (rbSecondaryResult == MA_SUCCESS)
-    {
-
-        ma_encoder_write_pcm_frames(encoder, rbOtherRead, frameCount, NULL);
-        ma_pcm_rb_commit_read(rbSecondary, frameCount);
-
-        // printf("Encoded %u frames from second buffer.\n", frameCount);
-    }
-    else
-    {
-        // printf("No data available in either buffer.\n");
+        sleep(0.1);
     }
 
-    free(mixedBuffer);
+    return NULL;
 }
 
 int main(int argc, char **argv)
@@ -421,34 +424,15 @@ int main(int argc, char **argv)
 
         struct mix_context rbs = {.rbPrimary = &rbPrimary, .rbSecondary = &rbSecondary, .encoder = &encoder};
 
-        ma_device_config deviceConfigAux = ma_device_config_init(ma_device_type_playback);
-        deviceConfigAux.playback.pDeviceID = &pPlaybackDeviceInfos[0].id;
-        deviceConfigAux.playback.format = FORMAT;
-        deviceConfigAux.playback.channels = CHANNELS;
-        deviceConfigAux.sampleRate = SAMPLE_RATE;
-        deviceConfigAux.dataCallback = rb_read_callback;
-        deviceConfigAux.pUserData = &rbs;
-
-        ma_device deviceAux;
-        if (ma_device_init(NULL, &deviceConfigAux, &deviceAux) != MA_SUCCESS)
-        {
-            printf("Failed to initialize playback device.\n");
-            return -2;
-        }
-
-        if (ma_device_start(&deviceAux) != MA_SUCCESS)
-        {
-            ma_device_uninit(&deviceAux);
-            printf("Failed to start device.\n");
-            return -3;
-        }
+        pthread_t thread;
+        pthread_create(&thread, NULL, rb_read_thread, (void *)(&rbs));
 
         printf("Press Enter to stop recording...\n");
         getchar();
 
         ma_device_uninit(&devicePrimary);
         ma_device_uninit(&deviceSecundary);
-        ma_device_uninit(&deviceAux);
+        pthread_cancel(thread);
 
         ma_context_uninit(&context);
 
