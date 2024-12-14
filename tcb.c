@@ -80,21 +80,59 @@ ma_result tcb_device_start(tcb_device *device)
     return MA_SUCCESS;
 }
 
+void tcb_device_uninit(tcb_device *device)
+{
+    ma_device_uninit(&device->device);
+    ma_pcm_rb_uninit(&device->rb);
+    ma_data_converter_uninit(&device->converter, NULL);
+}
+
 typedef struct
 {
     tcb_device primary;
     tcb_device secundary;
-    ma_encoder *encoder;
+    ma_encoder encoder;
 } tcb_context;
 
-struct mix_context
+ma_result tcb_context_init(tcb_context *context, const char *pFilePath, ma_device_id *primary_device_id, ma_device_id *secundary_device_id)
 {
-    ma_pcm_rb *rbPrimary;
-    ma_pcm_rb *rbSecundary;
-    ma_data_converter *converterPrimary;
-    ma_data_converter *converterSecundary;
-    ma_encoder *encoder;
-};
+    ma_result result;
+    result = tcb_device_init(primary_device_id, &context->primary);
+    if (result != MA_SUCCESS)
+    {
+        printf("Failed to initialize primary device.\n");
+        return result;
+    }
+
+    result = tcb_device_init(secundary_device_id, &context->secundary);
+    if (result != MA_SUCCESS)
+    {
+        printf("Failed to initialize secundary device.\n");
+        return result;
+    }
+
+    ma_encoder_config encoderConfig = ma_encoder_config_init(
+        ma_encoding_format_wav,
+        TARGET_FORMAT,
+        TARGET_CHANNELS,
+        TARGET_SAMPLE_RATE);
+
+    result = ma_encoder_init_file(pFilePath, &encoderConfig, &context->encoder);
+    if (result != MA_SUCCESS)
+    {
+        printf("Failed to initialize output file.\n");
+        return result;
+    }
+
+    return MA_SUCCESS;
+}
+
+void tcb_context_uninit(tcb_context *context)
+{
+    tcb_device_uninit(&context->primary);
+    tcb_device_uninit(&context->secundary);
+    ma_encoder_uninit(&context->encoder);
+}
 
 void ensure_record_folder()
 {
@@ -244,18 +282,19 @@ void rb_write_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma
 
 void *rb_read_thread(void *arg)
 {
-    struct mix_context *mixContext = (struct mix_context *)arg;
-    assert(mixContext != NULL);
+    tcb_context *tcbContext = (tcb_context *)arg;
+    assert(tcbContext != NULL);
 
     ma_uint32 frameCountPrimary;
     ma_uint32 frameCountSecundary;
     ma_uint32 frameCount;
     ma_uint32 bytesPerFrameNew = ma_get_bytes_per_frame(TARGET_FORMAT, TARGET_CHANNELS);
-    ma_pcm_rb *rb = mixContext->rbPrimary;
-    ma_pcm_rb *rbSecundary = mixContext->rbSecundary;
-    ma_data_converter *converterPrimary = mixContext->converterPrimary;
-    ma_data_converter *converterSecundary = mixContext->converterSecundary;
-    ma_encoder *encoder = mixContext->encoder;
+
+    ma_pcm_rb *rb = &tcbContext->primary.rb;
+    ma_pcm_rb *rbSecundary = &tcbContext->secundary.rb;
+    ma_data_converter *converterPrimary = &tcbContext->primary.converter;
+    ma_data_converter *converterSecundary = &tcbContext->secundary.converter;
+    ma_encoder *encoder = &tcbContext->encoder;
 
     assert(encoder != NULL);
 
@@ -442,45 +481,38 @@ int main(int argc, char **argv)
         deviceConfigPrimary.capture.pDeviceID = &pCaptureDeviceInfos[primary_device].id;
         deviceConfigPrimary.dataCallback = rb_write_callback;
 
-        tcb_device primary;
-        if (tcb_device_init(&pCaptureDeviceInfos[primary_device].id, &primary) != MA_SUCCESS) {
-            printf("Failed to initialize primary device.\n");
+        tcb_context tcbContext;
+        ma_result result = tcb_context_init(&tcbContext, file_path, &pCaptureDeviceInfos[primary_device].id, &pCaptureDeviceInfos[secondary_device].id);
+        if (result != MA_SUCCESS)
+        {
+            printf("Failed to initialize tcb context.\n");
         }
-        if (tcb_device_start(&primary) != MA_SUCCESS) {
+
+        if (tcb_device_start(&tcbContext.primary) != MA_SUCCESS)
+        {
             printf("Failed to start primary device.\n");
         }
-
-        tcb_device secundary;
-        if (tcb_device_init(&pCaptureDeviceInfos[secondary_device].id, &secundary) != MA_SUCCESS) {
-            printf("Failed to initialize secundary device.\n");
+        else
+        {
+            printf("Primary device started.\n");
         }
-        if (tcb_device_start(&secundary) != MA_SUCCESS) {
+
+        if (tcb_device_start(&tcbContext.secundary) != MA_SUCCESS)
+        {
             printf("Failed to start secundary device.\n");
         }
-
-        ma_encoder_config encoderConfig = ma_encoder_config_init(
-            ma_encoding_format_wav,
-            TARGET_FORMAT,
-            TARGET_CHANNELS,
-            TARGET_SAMPLE_RATE);
-
-        ma_encoder encoder;
-        if (ma_encoder_init_file(file_path, &encoderConfig, &encoder) != MA_SUCCESS)
+        else
         {
-            printf("Failed to initialize output file.\n");
+            printf("Secundary device started.\n");
         }
 
-        struct mix_context rbs = {.rbPrimary = &primary.rb, .rbSecundary = &secundary.rb, .encoder = &encoder, .converterPrimary = &primary.converter, .converterSecundary = &secundary.converter};
-
         pthread_t thread;
-        pthread_create(&thread, NULL, rb_read_thread, (void *)(&rbs));
+        pthread_create(&thread, NULL, rb_read_thread, (void *)(&tcbContext));
 
         printf("Press Enter to stop recording...\n");
         getchar();
 
-        ma_encoder_uninit(&encoder);
-        ma_device_uninit(&primary.device);
-        ma_device_uninit(&secundary.device);
+        tcb_context_uninit(&tcbContext);
         pthread_cancel(thread);
 
         ma_context_uninit(&context);
