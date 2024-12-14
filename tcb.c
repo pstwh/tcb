@@ -11,12 +11,14 @@
 #include <sys/types.h>
 #include <sndfile.h>
 
-#define RECORD_FOLDER "tcb"
+#define RECORD_FOLDER ".tcb"
 #define BUFFER_SIZE_IN_FRAMES 1024 * 16
 
 #define TARGET_FORMAT ma_format_f32
 #define TARGET_CHANNELS 1
 #define TARGET_SAMPLE_RATE 16000
+
+#define MODEL_FILE "ggml-large-v3-turbo-q5_0.bin"
 
 void rb_write_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uint32 frameCount);
 
@@ -371,11 +373,15 @@ void *rb_read_thread(void *arg)
 
 int main(int argc, char **argv)
 {
+    char *home = getenv("HOME");
+    char model_path[512];
+    snprintf(model_path, sizeof(model_path), "%s/%s/%s", home, RECORD_FOLDER, MODEL_FILE);
+
     struct whisper_context_params cparams = whisper_context_default_params();
     cparams.use_gpu = true;
     cparams.flash_attn = true;
     cparams.dtw_aheads_preset = WHISPER_AHEADS_LARGE_V3_TURBO;
-    struct whisper_context *ctx = whisper_init_from_file_with_params("/home/pstwh/tcb/ggml-large-v3-turbo-q5_0.bin", cparams);
+    struct whisper_context *ctx = whisper_init_from_file_with_params(model_path, cparams);
     if (!ctx)
     {
         printf("Failed to initialize whisper context.\n");
@@ -399,6 +405,8 @@ int main(int argc, char **argv)
         printf("    list-records            List all recorded files\n");
         printf("    play <name/number>      Play a specific record\n");
         printf("    record <dev1> <dev2>   Record using specified devices\n");
+        printf("           --record-name <name>   Name of the recording\n");
+        printf("           --language <language>  Language of the recording\n");
         return 0;
     }
 
@@ -433,7 +441,7 @@ int main(int argc, char **argv)
         char file_path[512];
         char *home = getenv("HOME");
 
-        char *file_prefix = "tcp";
+        char *file_prefix = "tcb";
         char *language = "pt";
         for (int i = 4; i < argc; i++)
         {
@@ -555,13 +563,28 @@ int main(int argc, char **argv)
             return 1;
         }
 
+        char* output_filepath = (char*)malloc(strlen(file_path) + 1);
+        strcpy(output_filepath, file_path);
+        char* extension = strstr(output_filepath, ".wav");
+        if(extension == NULL) {
+            printf("Error: input file is not a .wav file\n");
+            free(audioBuffer);
+            whisper_free(ctx);
+            return 1;
+        } 
+
+        strcpy(extension, ".txt");
+
+        FILE *outfile = fopen(output_filepath, "w");
+
         const int segments = whisper_full_n_segments(ctx);
         for (int i = 0; i < segments; i++)
         {
             const char *text = whisper_full_get_segment_text(ctx, i);
-            printf("Segment %d: %s\n", i, text);
+            printf("%s\n", text);
+            fprintf(outfile, "%s\n", text);
         }
-
+        fclose(outfile);
         free(audioBuffer);
         whisper_free(ctx);
     }

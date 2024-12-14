@@ -22,6 +22,8 @@ Commands:
     list-records            List all recorded files
     play <name/number>      Play a specific record (TODO)
     record <dev1> <dev2>    Record audio from specified devices
+           --record-name <name>   Name of the recording
+           --language <language>  Language of the recording
 ```
 
 ### Example: Recording Audio
@@ -62,7 +64,12 @@ $ cat /home/{user}/tcb/tcb_20241212_010202.wav_16000.txt
 
 ## TODO
 
-- [ ] Implement things in a better way.
-- [ ] Allow Whisper transcription without external bin calls.
+- [x] Implement things in a better way.
+- [x] Allow Whisper transcription without external bin calls.
 - [ ] Make a better cli interface.
+- [ ] Allow streming transcription.
+- [ ] Allow more than two devices.
+- [ ] Better project structure.
+- [ ] Shortcut for model download.
+- [ ] Add cpu and gpu build (currently is using cuda by default and you need to build whisper.cpp first).
 - [ ] In the future maybe for a new project add a GUI for easier device selection and recording management.
