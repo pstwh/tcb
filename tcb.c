@@ -285,70 +285,71 @@ void *rb_read_thread(void *arg)
     tcb_context *tcbContext = (tcb_context *)arg;
     assert(tcbContext != NULL);
 
-    ma_uint32 frameCountPrimary;
-    ma_uint32 frameCountSecundary;
-    ma_uint32 frameCount;
     ma_uint32 bytesPerFrameNew = ma_get_bytes_per_frame(TARGET_FORMAT, TARGET_CHANNELS);
-
     ma_pcm_rb *rb = &tcbContext->primary.rb;
     ma_pcm_rb *rbSecundary = &tcbContext->secundary.rb;
     ma_data_converter *converterPrimary = &tcbContext->primary.converter;
     ma_data_converter *converterSecundary = &tcbContext->secundary.converter;
     ma_encoder *encoder = &tcbContext->encoder;
-
     assert(encoder != NULL);
-
-    void *rbRead = NULL;
-    void *rbOtherRead = NULL;
 
     while (1)
     {
-        frameCountPrimary = ma_pcm_rb_available_read(rb);
-        frameCountSecundary = ma_pcm_rb_available_read(rbSecundary);
+        ma_uint32 frameCountPrimary = ma_pcm_rb_available_read(rb);
+        ma_uint32 frameCountSecundary = ma_pcm_rb_available_read(rbSecundary);
+        ma_uint32 frameCount = ma_min(frameCountPrimary, frameCountSecundary);
 
-        frameCount = ma_min(frameCountPrimary, frameCountSecundary);
         if (frameCount > 0)
         {
-            ma_result rbPrimaryResult = ma_pcm_rb_acquire_read(rb, &frameCount, &rbRead);
-            ma_result rbSecundaryResult = ma_pcm_rb_acquire_read(rbSecundary, &frameCount, &rbOtherRead);
-
-            if (rbPrimaryResult == MA_SUCCESS && rbSecundaryResult == MA_SUCCESS)
+            void *rbRead, *rbOtherRead;
+            if (ma_pcm_rb_acquire_read(rb, &frameCount, &rbRead) == MA_SUCCESS &&
+                ma_pcm_rb_acquire_read(rbSecundary, &frameCount, &rbOtherRead) == MA_SUCCESS)
             {
+
                 ma_int16 *rbBuffer = (ma_int16 *)rbRead;
                 ma_int16 *rbOtherBuffer = (ma_int16 *)rbOtherRead;
 
                 ma_uint64 frameCountOld = frameCount;
-                ma_uint64 frameCountConvertedPrimary;
-                ma_uint64 frameCountConvertedSecundary;
-                if (ma_data_converter_get_expected_output_frame_count(converterPrimary, frameCountOld, &frameCountConvertedPrimary) != MA_SUCCESS)
+                ma_uint64 frameCountConvertedPrimary, frameCountConvertedSecundary;
+
+                if (ma_data_converter_get_expected_output_frame_count(converterPrimary, frameCountOld, &frameCountConvertedPrimary) != MA_SUCCESS ||
+                    ma_data_converter_get_expected_output_frame_count(converterSecundary, frameCountOld, &frameCountConvertedSecundary) != MA_SUCCESS)
                 {
                     printf("Failed to get expected output frame count.\n");
-                }
-                if (ma_data_converter_get_expected_output_frame_count(converterSecundary, frameCountOld, &frameCountConvertedSecundary) != MA_SUCCESS)
-                {
-                    printf("Failed to get expected output frame count.\n");
+                    ma_pcm_rb_commit_read(rb, frameCount);
+                    ma_pcm_rb_commit_read(rbSecundary, frameCount);
+                    continue;
                 }
 
                 ma_uint64 frameCountConverted = ma_min(frameCountConvertedPrimary, frameCountConvertedSecundary);
-
                 ma_float *rbBufferConverted = malloc(frameCountConverted * bytesPerFrameNew);
                 ma_float *rbOtherBufferConverted = malloc(frameCountConverted * bytesPerFrameNew);
-                ma_uint64 framesConvertedPrimary = frameCountConverted;
-                ma_uint64 framesConvertedSecundary = frameCountConverted;
-                if (ma_data_converter_process_pcm_frames(converterPrimary, rbBuffer, &frameCountOld, rbBufferConverted, &framesConvertedPrimary) != MA_SUCCESS)
+                if (!rbBufferConverted || !rbOtherBufferConverted)
                 {
-                    printf("Failed to convert primary buffer.\n");
+                    printf("Failed to allocate memory for converted buffers\n");
+                    ma_pcm_rb_commit_read(rb, frameCount);
+                    ma_pcm_rb_commit_read(rbSecundary, frameCount);
+                    continue;
                 }
 
-                frameCountOld = frameCount;
-                if (ma_data_converter_process_pcm_frames(converterSecundary, rbOtherBuffer, &frameCountOld, rbOtherBufferConverted, &framesConvertedSecundary) != MA_SUCCESS)
+                ma_uint64 framesConvertedPrimary = frameCountConverted;
+                ma_uint64 framesConvertedSecundary = frameCountConverted;
+
+                if (ma_data_converter_process_pcm_frames(converterPrimary, rbBuffer, &frameCountOld, rbBufferConverted, &framesConvertedPrimary) != MA_SUCCESS ||
+                    (frameCountOld = frameCount,
+                     ma_data_converter_process_pcm_frames(converterSecundary, rbOtherBuffer, &frameCountOld, rbOtherBufferConverted, &framesConvertedSecundary) != MA_SUCCESS))
                 {
-                    printf("Failed to convert secondary buffer.\n");
+                    printf("Failed to convert buffer(s).\n");
+                    free(rbBufferConverted);
+                    free(rbOtherBufferConverted);
+                    ma_pcm_rb_commit_read(rb, frameCount);
+                    ma_pcm_rb_commit_read(rbSecundary, frameCount);
+                    continue;
                 }
 
                 for (ma_uint32 i = 0; i < frameCountConverted; i++)
                 {
-                    rbBufferConverted[i] = ma_clamp((rbBufferConverted[i] + rbOtherBufferConverted[i]) / 2.0f, -1.0f, 1.0f);
+                    rbBufferConverted[i] = ma_clamp((rbBufferConverted[i] + rbOtherBufferConverted[i]), -1.0f, 1.0f);
                 }
 
                 ma_uint64 framesWritten;
@@ -359,15 +360,12 @@ void *rb_read_thread(void *arg)
 
                 ma_pcm_rb_commit_read(rb, frameCount);
                 ma_pcm_rb_commit_read(rbSecundary, frameCount);
-
                 free(rbBufferConverted);
                 free(rbOtherBufferConverted);
             }
         }
-
         sleep(0.5);
     }
-
     return NULL;
 }
 
