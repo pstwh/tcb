@@ -7,7 +7,7 @@
 - Record from two devices at once (e.g., microphone and system audio).
 - Mix and encode the audio into a single file.
 - Playback recorded files (TODO).
-- Option to transcribe audio using Whisper (TODO. It just calls compiled whisper for now, in the future it will be integrated into the tool).
+- Transcribe audio using Whisper.
 
 
 ## Usage
