@@ -221,11 +221,6 @@ void *rb_read_thread(void *arg)
 
                 ma_float *rbBufferConverted = malloc(frameCountConverted * bytesPerFrameNew);
                 ma_float *rbOtherBufferConverted = malloc(frameCountConverted * bytesPerFrameNew);
-                if (rbBufferConverted == NULL || rbOtherBufferConverted == NULL)
-                {
-                    printf("Failed to allocate memory for converted buffers.\n");
-                }
-
                 ma_uint64 framesConvertedPrimary = frameCountConverted;
                 ma_uint64 framesConvertedSecondary = frameCountConverted;
                 if (ma_data_converter_process_pcm_frames(converter, rbBuffer, &frameCountOld, rbBufferConverted, &framesConvertedPrimary) != MA_SUCCESS)
@@ -233,27 +228,19 @@ void *rb_read_thread(void *arg)
                     printf("Failed to convert primary buffer.\n");
                 }
 
-                frameCountOld = frameCount; 
+                frameCountOld = frameCount;
                 if (ma_data_converter_process_pcm_frames(converter, rbOtherBuffer, &frameCountOld, rbOtherBufferConverted, &framesConvertedSecondary) != MA_SUCCESS)
                 {
                     printf("Failed to convert secondary buffer.\n");
                 }
 
-                ma_float *mixedBuffer = malloc(frameCountConverted * bytesPerFrameNew);
-                if (mixedBuffer == NULL)
-                {
-                    printf("Failed to allocate memory for mixed buffer.\n");
-                }
-
-                printf("Converted %llu frames.\n", frameCountConverted);
-
                 for (ma_uint32 i = 0; i < frameCountConverted; i++)
                 {
-                    mixedBuffer[i] = (rbBufferConverted[i] + rbOtherBufferConverted[i]) / 2.0f;
+                    rbBufferConverted[i] = ma_clamp((rbBufferConverted[i] + rbOtherBufferConverted[i]) / 2.0f, -1.0f, 1.0f);
                 }
 
                 ma_uint64 framesWritten;
-                if (ma_encoder_write_pcm_frames(encoder, mixedBuffer, frameCountConverted, &framesWritten) != MA_SUCCESS)
+                if (ma_encoder_write_pcm_frames(encoder, rbBufferConverted, frameCountConverted, &framesWritten) != MA_SUCCESS)
                 {
                     printf("Failed to write to encoder.\n");
                 }
@@ -261,7 +248,6 @@ void *rb_read_thread(void *arg)
                 ma_pcm_rb_commit_read(rb, frameCount);
                 ma_pcm_rb_commit_read(rbSecondary, frameCount);
 
-                free(mixedBuffer);
                 free(rbBufferConverted);
                 free(rbOtherBufferConverted);
             }
@@ -479,26 +465,12 @@ int main(int argc, char **argv)
 
         ma_context_uninit(&context);
 
-        char command[512];
-        snprintf(command, sizeof(command), "ffmpeg -i %s -ar 16000 -ac 1 %s_16000.wav", file_path, file_path);
-        if (system(command) != 0)
-        {
-            printf("Failed to run ffmpeg command.\n");
-            return -4;
-        }
-
-        char file_dir[512];
-        snprintf(file_dir, sizeof(file_dir), "%s/%s", home, RECORD_FOLDER);
-
-        char audio_path[512];
-        snprintf(audio_path, sizeof(audio_path), "%s_16000.wav", file_path);
-
-        printf("%s\n", audio_path);
+        printf("%s\n", file_path);
         SF_INFO sf_info;
-        SNDFILE *audio_file = sf_open(audio_path, SFM_READ, &sf_info);
+        SNDFILE *audio_file = sf_open(file_path, SFM_READ, &sf_info);
         if (!audio_file)
         {
-            fprintf(stderr, "Failed to open audio file: %s\n", audio_path);
+            fprintf(stderr, "Failed to open audio file: %s\n", file_path);
             whisper_free(ctx);
             return 1;
         }
@@ -510,8 +482,10 @@ int main(int argc, char **argv)
             sf_close(audio_file);
             whisper_free(ctx);
             return 1;
+        } else {
+            printf("Audio format looks right: %d channels, %d Hz, Format: %d\n", sf_info.channels, sf_info.samplerate, sf_info.format);
         }
-
+ 
         size_t audio_size = sf_info.frames;
         int16_t *audio_data = malloc(audio_size * sizeof(int16_t));
         if (!audio_data)
@@ -572,13 +546,6 @@ int main(int argc, char **argv)
 
         free(audio_float_data);
         whisper_free(ctx);
-
-        snprintf(command, sizeof(command), "rm %s_16000.wav", file_path);
-        if (system(command) != 0)
-        {
-            printf("Error deleting 16000.wav file.\n");
-            return -1;
-        }
     }
     else
     {
