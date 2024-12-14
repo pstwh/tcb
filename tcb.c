@@ -459,6 +459,7 @@ int main(int argc, char **argv)
         printf("Press Enter to stop recording...\n");
         getchar();
 
+        ma_encoder_uninit(&encoder);
         ma_device_uninit(&devicePrimary);
         ma_device_uninit(&deviceSecundary);
         pthread_cancel(thread);
@@ -466,62 +467,30 @@ int main(int argc, char **argv)
         ma_context_uninit(&context);
 
         printf("%s\n", file_path);
-        SF_INFO sf_info;
-        SNDFILE *audio_file = sf_open(file_path, SFM_READ, &sf_info);
-        if (!audio_file)
+
+        ma_decoder_config decoder_config = ma_decoder_config_init(TARGET_FORMAT, TARGET_CHANNELS, TARGET_SAMPLE_RATE);
+
+        ma_decoder decoder;
+        if (ma_decoder_init_file(file_path, &decoder_config, &decoder) != MA_SUCCESS)
         {
-            fprintf(stderr, "Failed to open audio file: %s\n", file_path);
-            whisper_free(ctx);
-            return 1;
+            printf("Failed to initialize decoder for file: %s\n", file_path);
         }
 
-        if (sf_info.channels != 1 || sf_info.samplerate != 16000)
+        ma_uint64 framesSize;
+        if (ma_decoder_get_length_in_pcm_frames(&decoder, &framesSize) != MA_SUCCESS)
         {
-            fprintf(stderr, "Invalid audio format: expected mono 16kHz WAV\n");
-            printf("Audio format: %d channels, %d Hz, Format: %d\n", sf_info.channels, sf_info.samplerate, sf_info.format);
-            sf_close(audio_file);
-            whisper_free(ctx);
-            return 1;
-        } else {
-            printf("Audio format looks right: %d channels, %d Hz, Format: %d\n", sf_info.channels, sf_info.samplerate, sf_info.format);
-        }
- 
-        size_t audio_size = sf_info.frames;
-        int16_t *audio_data = malloc(audio_size * sizeof(int16_t));
-        if (!audio_data)
-        {
-            fprintf(stderr, "Memory allocation failed\n");
-            sf_close(audio_file);
-            whisper_free(ctx);
-            return 1;
+            printf("Failed to get length of file.\n");
         }
 
-        if (sf_read_short(audio_file, audio_data, audio_size) != audio_size)
+        ma_uint32 bytesPerFrameNew = ma_get_bytes_per_frame(TARGET_FORMAT, TARGET_CHANNELS);
+        ma_uint64 bufferSize = framesSize * bytesPerFrameNew;
+
+        ma_float *audioBuffer = malloc(bufferSize);
+        ma_uint64 framesRead;
+        if (ma_decoder_read_pcm_frames(&decoder, audioBuffer, framesSize, &framesRead) != MA_SUCCESS)
         {
-            fprintf(stderr, "Failed to read audio data\n");
-            free(audio_data);
-            sf_close(audio_file);
-            whisper_free(ctx);
-            return 1;
+            printf("Failed to read audio data. %d\n", result);
         }
-
-        sf_close(audio_file);
-
-        float *audio_float_data = malloc(audio_size * sizeof(float));
-        if (!audio_float_data)
-        {
-            fprintf(stderr, "Memory allocation failed for float data\n");
-            free(audio_data);
-            whisper_free(ctx);
-            return 1;
-        }
-
-        for (size_t i = 0; i < audio_size; i++)
-        {
-            audio_float_data[i] = (float)audio_data[i] / 32768.0f;
-        }
-
-        free(audio_data);
 
         struct whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
         wparams.language = "pt";
@@ -529,10 +498,10 @@ int main(int argc, char **argv)
         wparams.strategy = WHISPER_SAMPLING_BEAM_SEARCH;
         wparams.beam_search.beam_size = 5;
 
-        if (whisper_full_parallel(ctx, wparams, audio_float_data, audio_size, 1) != 0)
+        if (whisper_full_parallel(ctx, wparams, audioBuffer, framesSize, 1) != 0)
         {
             fprintf(stderr, "Failed to process audio\n");
-            free(audio_float_data);
+            free(audioBuffer);
             whisper_free(ctx);
             return 1;
         }
@@ -544,7 +513,7 @@ int main(int argc, char **argv)
             printf("Segment %d: %s\n", i, text);
         }
 
-        free(audio_float_data);
+        free(audioBuffer);
         whisper_free(ctx);
     }
     else
