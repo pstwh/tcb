@@ -17,10 +17,15 @@
 #define SAMPLE_RATE 44100
 #define RECORD_FOLDER "tcb"
 
+#define TARGET_FORMAT ma_format_f32
+#define TARGET_CHANNELS 1
+#define TARGET_SAMPLE_RATE 16000
+
 struct mix_context
 {
     ma_pcm_rb *rbPrimary;
     ma_pcm_rb *rbSecondary;
+    ma_data_converter *converter;
     ma_encoder *encoder;
 };
 
@@ -179,10 +184,12 @@ void *rb_read_thread(void *arg)
     ma_uint32 frameCountSecondary;
     ma_uint32 frameCount;
     ma_uint32 bytesPerFrame = ma_get_bytes_per_frame(FORMAT, CHANNELS);
+    ma_uint32 bytesPerFrameNew = ma_get_bytes_per_frame(TARGET_FORMAT, TARGET_CHANNELS);
     ma_pcm_rb *rb = mixContext->rbPrimary;
 
     ma_pcm_rb *rbSecondary = mixContext->rbSecondary;
     ma_encoder *encoder = mixContext->encoder;
+    ma_data_converter *converter = mixContext->converter;
 
     assert(encoder != NULL);
 
@@ -200,45 +207,67 @@ void *rb_read_thread(void *arg)
             ma_result rbPrimaryResult = ma_pcm_rb_acquire_read(rb, &frameCount, &rbRead);
             ma_result rbSecondaryResult = ma_pcm_rb_acquire_read(rbSecondary, &frameCount, &rbOtherRead);
 
-            int16_t *mixedBuffer = malloc(frameCount * bytesPerFrame);
-            if (mixedBuffer == NULL)
-            {
-                printf("Memory allocation failed for mixed buffer.\n");
-                break;
-            }
-
             if (rbPrimaryResult == MA_SUCCESS && rbSecondaryResult == MA_SUCCESS)
             {
-                int16_t *rbBuffer = (int16_t *)rbRead;
-                int16_t *rbOtherBuffer = (int16_t *)rbOtherRead;
+                ma_int16 *rbBuffer = (ma_int16 *)rbRead;
+                ma_int16 *rbOtherBuffer = (ma_int16 *)rbOtherRead;
 
-                for (ma_uint32 i = 0; i < frameCount * CHANNELS; i++)
+                ma_uint64 frameCountOld = frameCount;
+                ma_uint64 frameCountConverted;
+                if (ma_data_converter_get_expected_output_frame_count(converter, frameCountOld, &frameCountConverted) != MA_SUCCESS)
                 {
-                    int32_t mixedSample = ((int32_t)rbBuffer[i] + (int32_t)rbOtherBuffer[i]) / 2;
-                    mixedBuffer[i] = (int16_t)ma_clamp(mixedSample, -32768, 32767);
+                    printf("Failed to get expected output frame count.\n");
+                }
+
+                ma_float *rbBufferConverted = malloc(frameCountConverted * bytesPerFrameNew);
+                ma_float *rbOtherBufferConverted = malloc(frameCountConverted * bytesPerFrameNew);
+                if (rbBufferConverted == NULL || rbOtherBufferConverted == NULL)
+                {
+                    printf("Failed to allocate memory for converted buffers.\n");
+                }
+
+                ma_uint64 framesConvertedPrimary = frameCountConverted;
+                ma_uint64 framesConvertedSecondary = frameCountConverted;
+                if (ma_data_converter_process_pcm_frames(converter, rbBuffer, &frameCountOld, rbBufferConverted, &framesConvertedPrimary) != MA_SUCCESS)
+                {
+                    printf("Failed to convert primary buffer.\n");
+                }
+
+                frameCountOld = frameCount; 
+                if (ma_data_converter_process_pcm_frames(converter, rbOtherBuffer, &frameCountOld, rbOtherBufferConverted, &framesConvertedSecondary) != MA_SUCCESS)
+                {
+                    printf("Failed to convert secondary buffer.\n");
+                }
+
+                ma_float *mixedBuffer = malloc(frameCountConverted * bytesPerFrameNew);
+                if (mixedBuffer == NULL)
+                {
+                    printf("Failed to allocate memory for mixed buffer.\n");
+                }
+
+                printf("Converted %llu frames.\n", frameCountConverted);
+
+                for (ma_uint32 i = 0; i < frameCountConverted; i++)
+                {
+                    mixedBuffer[i] = (rbBufferConverted[i] + rbOtherBufferConverted[i]) / 2.0f;
                 }
 
                 ma_uint64 framesWritten;
-                ma_encoder_write_pcm_frames(encoder, mixedBuffer, frameCount, &framesWritten);
+                if (ma_encoder_write_pcm_frames(encoder, mixedBuffer, frameCountConverted, &framesWritten) != MA_SUCCESS)
+                {
+                    printf("Failed to write to encoder.\n");
+                }
 
                 ma_pcm_rb_commit_read(rb, frameCount);
                 ma_pcm_rb_commit_read(rbSecondary, frameCount);
-            }
-            else if (rbPrimaryResult == MA_SUCCESS)
-            {
-                ma_encoder_write_pcm_frames(encoder, rbRead, frameCount, NULL);
-                ma_pcm_rb_commit_read(rb, frameCount);
-            }
-            else if (rbSecondaryResult == MA_SUCCESS)
-            {
-                ma_encoder_write_pcm_frames(encoder, rbOtherRead, frameCount, NULL);
-                ma_pcm_rb_commit_read(rbSecondary, frameCount);
-            }
 
-            free(mixedBuffer);
+                free(mixedBuffer);
+                free(rbBufferConverted);
+                free(rbOtherBufferConverted);
+            }
         }
 
-        sleep(0.1);
+        sleep(0.5);
     }
 
     return NULL;
@@ -410,11 +439,25 @@ int main(int argc, char **argv)
             return -3;
         }
 
+        ma_data_converter_config converterConfig = ma_data_converter_config_init(
+            FORMAT,
+            TARGET_FORMAT,
+            CHANNELS,
+            TARGET_CHANNELS,
+            SAMPLE_RATE,
+            TARGET_SAMPLE_RATE);
+
+        ma_data_converter converter;
+        if (ma_data_converter_init(&converterConfig, NULL, &converter) != MA_SUCCESS)
+        {
+            printf("Failed to initialize data converter.\n");
+        }
+
         ma_encoder_config encoderConfig = ma_encoder_config_init(
             ma_encoding_format_wav,
-            FORMAT,
-            CHANNELS,
-            SAMPLE_RATE);
+            TARGET_FORMAT,
+            TARGET_CHANNELS,
+            TARGET_SAMPLE_RATE);
 
         ma_encoder encoder;
         if (ma_encoder_init_file(file_path, &encoderConfig, &encoder) != MA_SUCCESS)
@@ -422,7 +465,7 @@ int main(int argc, char **argv)
             printf("Failed to initialize output file.\n");
         }
 
-        struct mix_context rbs = {.rbPrimary = &rbPrimary, .rbSecondary = &rbSecondary, .encoder = &encoder};
+        struct mix_context rbs = {.rbPrimary = &rbPrimary, .rbSecondary = &rbSecondary, .encoder = &encoder, .converter = &converter};
 
         pthread_t thread;
         pthread_create(&thread, NULL, rb_read_thread, (void *)(&rbs));

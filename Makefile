@@ -42,10 +42,10 @@ OBJ = $(SRC:.c=.o)
 all: $(TARGET)
 
 $(TARGET): $(OBJ)
-	$(CXX) $^ -o $@ $(CXXFLAGS) $(LDFLAGS) $(INCLUDES)
+	$(CXX) $^ -g -o $@ $(CXXFLAGS) $(LDFLAGS) $(INCLUDES)
 
 %.o: %.c
-	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -g -o $@
 
 clean:
 	rm -f $(TARGET) $(OBJ)
