@@ -18,6 +18,75 @@
 #define TARGET_CHANNELS 1
 #define TARGET_SAMPLE_RATE 16000
 
+void rb_write_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uint32 frameCount);
+
+typedef struct
+{
+    ma_device device;
+    ma_pcm_rb rb;
+    ma_data_converter converter;
+} tcb_device;
+
+ma_result tcb_device_init(ma_device_id *device_id, tcb_device *device)
+{
+    ma_device_config config = ma_device_config_init(ma_device_type_capture);
+    config.capture.pDeviceID = device_id;
+    config.dataCallback = rb_write_callback;
+
+    ma_result result = ma_device_init(NULL, &config, &device->device);
+    if (result != MA_SUCCESS)
+    {
+        printf("Failed to initialize capture device.\n");
+        return result;
+    }
+
+    result = ma_pcm_rb_init(device->device.capture.format, device->device.capture.channels, BUFFER_SIZE_IN_FRAMES, NULL, NULL, &device->rb);
+    if (result != MA_SUCCESS)
+    {
+        printf("Failed to initialize ring buffer.\n");
+        return result;
+    }
+
+    device->device.pUserData = &device->rb;
+
+    ma_data_converter_config converterPrimaryConfig = ma_data_converter_config_init(
+        device->device.capture.format,
+        TARGET_FORMAT,
+        device->device.capture.channels,
+        TARGET_CHANNELS,
+        device->device.sampleRate,
+        TARGET_SAMPLE_RATE);
+
+    result = ma_data_converter_init(&converterPrimaryConfig, NULL, &device->converter);
+    if (result != MA_SUCCESS)
+    {
+        printf("Failed to initialize data converter.\n");
+        return result;
+    }
+
+    return MA_SUCCESS;
+}
+
+ma_result tcb_device_start(tcb_device *device)
+{
+    ma_result result = ma_device_start(&device->device);
+    if (result != MA_SUCCESS)
+    {
+        printf("Failed to start device.\n");
+        ma_device_uninit(&device->device);
+        return result;
+    }
+
+    return MA_SUCCESS;
+}
+
+typedef struct
+{
+    tcb_device primary;
+    tcb_device secundary;
+    ma_encoder *encoder;
+} tcb_context;
+
 struct mix_context
 {
     ma_pcm_rb *rbPrimary;
@@ -373,90 +442,20 @@ int main(int argc, char **argv)
         deviceConfigPrimary.capture.pDeviceID = &pCaptureDeviceInfos[primary_device].id;
         deviceConfigPrimary.dataCallback = rb_write_callback;
 
-        ma_device devicePrimary;
-        if (ma_device_init(NULL, &deviceConfigPrimary, &devicePrimary) != MA_SUCCESS)
-        {
-            printf("Failed to initialize capture device.\n");
-            return -2;
+        tcb_device primary;
+        if (tcb_device_init(&pCaptureDeviceInfos[primary_device].id, &primary) != MA_SUCCESS) {
+            printf("Failed to initialize primary device.\n");
+        }
+        if (tcb_device_start(&primary) != MA_SUCCESS) {
+            printf("Failed to start primary device.\n");
         }
 
-        ma_pcm_rb rbPrimary;
-        ma_result result = ma_pcm_rb_init(devicePrimary.capture.format, devicePrimary.capture.channels, BUFFER_SIZE_IN_FRAMES, NULL, NULL, &rbPrimary);
-        if (result != MA_SUCCESS)
-        {
-            printf("Failed to initialize ring buffer.\n");
-            return -1;
+        tcb_device secundary;
+        if (tcb_device_init(&pCaptureDeviceInfos[secondary_device].id, &secundary) != MA_SUCCESS) {
+            printf("Failed to initialize secundary device.\n");
         }
-
-        devicePrimary.pUserData = &rbPrimary;
-
-        ma_data_converter_config converterPrimaryConfig = ma_data_converter_config_init(
-            devicePrimary.capture.format,
-            TARGET_FORMAT,
-            devicePrimary.capture.channels,
-            TARGET_CHANNELS,
-            devicePrimary.sampleRate,
-            TARGET_SAMPLE_RATE);
-
-        ma_data_converter converterPrimary;
-        if (ma_data_converter_init(&converterPrimaryConfig, NULL, &converterPrimary) != MA_SUCCESS)
-        {
-            printf("Failed to initialize data converter.\n");
-        }
-
-        if (ma_device_start(&devicePrimary) != MA_SUCCESS)
-        {
-            ma_device_uninit(&devicePrimary);
-            printf("Failed to start device.\n");
-            return -3;
-        }
-
-        ma_device_config deviceConfigSecundary = ma_device_config_init(ma_device_type_capture);
-        deviceConfigSecundary.capture.pDeviceID = &pCaptureDeviceInfos[secondary_device].id;
-        deviceConfigSecundary.dataCallback = rb_write_callback;
-
-        ma_device deviceSecundary;
-        if (ma_device_init(NULL, &deviceConfigSecundary, &deviceSecundary) != MA_SUCCESS)
-        {
-            printf("Failed to initialize capture device.\n");
-            return -2;
-        }
-
-        ma_pcm_rb rbSecundary;
-        result = ma_pcm_rb_init(deviceSecundary.capture.format, deviceSecundary.capture.channels, BUFFER_SIZE_IN_FRAMES, NULL, NULL, &rbSecundary);
-        if (result != MA_SUCCESS)
-        {
-            printf("Failed to initialize ring buffer.\n");
-            return -1;
-        }
-
-        deviceSecundary.pUserData = &rbSecundary;
-        ma_data_converter_config converterSecundaryConfig = ma_data_converter_config_init(
-            deviceSecundary.capture.format,
-            TARGET_FORMAT,
-            deviceSecundary.capture.channels,
-            TARGET_CHANNELS,
-            deviceSecundary.sampleRate,
-            TARGET_SAMPLE_RATE);
-
-        ma_data_converter converterSecundary;
-        if (ma_data_converter_init(&converterSecundaryConfig, NULL, &converterSecundary) != MA_SUCCESS)
-        {
-            printf("Failed to initialize data converter.\n");
-        }
-
-        if (ma_device_start(&devicePrimary) != MA_SUCCESS)
-        {
-            ma_device_uninit(&devicePrimary);
-            printf("Failed to start device.\n");
-            return -3;
-        }
-
-        if (ma_device_start(&deviceSecundary) != MA_SUCCESS)
-        {
-            ma_device_uninit(&deviceSecundary);
-            printf("Failed to start device.\n");
-            return -3;
+        if (tcb_device_start(&secundary) != MA_SUCCESS) {
+            printf("Failed to start secundary device.\n");
         }
 
         ma_encoder_config encoderConfig = ma_encoder_config_init(
@@ -471,7 +470,7 @@ int main(int argc, char **argv)
             printf("Failed to initialize output file.\n");
         }
 
-        struct mix_context rbs = {.rbPrimary = &rbPrimary, .rbSecundary = &rbSecundary, .encoder = &encoder, .converterPrimary = &converterPrimary, .converterSecundary = &converterSecundary};
+        struct mix_context rbs = {.rbPrimary = &primary.rb, .rbSecundary = &secundary.rb, .encoder = &encoder, .converterPrimary = &primary.converter, .converterSecundary = &secundary.converter};
 
         pthread_t thread;
         pthread_create(&thread, NULL, rb_read_thread, (void *)(&rbs));
@@ -480,8 +479,8 @@ int main(int argc, char **argv)
         getchar();
 
         ma_encoder_uninit(&encoder);
-        ma_device_uninit(&devicePrimary);
-        ma_device_uninit(&deviceSecundary);
+        ma_device_uninit(&primary.device);
+        ma_device_uninit(&secundary.device);
         pthread_cancel(thread);
 
         ma_context_uninit(&context);
@@ -509,7 +508,7 @@ int main(int argc, char **argv)
         ma_uint64 framesRead;
         if (ma_decoder_read_pcm_frames(&decoder, audioBuffer, framesSize, &framesRead) != MA_SUCCESS)
         {
-            printf("Failed to read audio data. %d\n", result);
+            printf("Failed to read audio data.\n");
         }
 
         struct whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
