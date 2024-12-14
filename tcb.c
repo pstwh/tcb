@@ -1,5 +1,6 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio/miniaudio.h"
+#include "whisper.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -8,6 +9,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sndfile.h>
 
 #define FORMAT ma_format_s16
 #define CHANNELS 2
@@ -241,6 +243,17 @@ void rb_read_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_
 
 int main(int argc, char **argv)
 {
+    struct whisper_context_params cparams = whisper_context_default_params();
+    cparams.use_gpu = true;
+    cparams.flash_attn = true;
+    cparams.dtw_aheads_preset = WHISPER_AHEADS_LARGE_V3_TURBO;
+    struct whisper_context *ctx = whisper_init_from_file_with_params("/home/pstwh/tcb/ggml-large-v3-turbo-q5_0.bin", cparams);
+    if (!ctx)
+    {
+        printf("Failed to initialize whisper context.\n");
+        return 1;
+    }
+
     ensure_record_folder();
 
     ma_context context;
@@ -289,13 +302,31 @@ int main(int argc, char **argv)
         int primary_device = atoi(argv[2]);
         int secondary_device = atoi(argv[3]);
 
+        char file_path[512];
+        char *home = getenv("HOME");
+
+        char *file_prefix = "tcp";
+        char *language = "pt";
+        for (int i = 4; i < argc; i++)
+        {
+            if (strcmp(argv[i], "--record-name") == 0 && i + 1 < argc)
+            {
+                file_prefix = argv[i + 1];
+                break;
+            }
+
+            if (strcmp(argv[i], "--language") == 0 && i + 1 < argc)
+            {
+                language = argv[i + 1];
+                break;
+            }
+        }
+
         time_t now = time(NULL);
         char timestamp[64];
         strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", localtime(&now));
 
-        char *home = getenv("HOME");
-        char file_path[512];
-        snprintf(file_path, sizeof(file_path), "%s/%s/tcb_%s.wav", home, RECORD_FOLDER, timestamp);
+        snprintf(file_path, sizeof(file_path), "%s/%s/%s_%s.wav", home, RECORD_FOLDER, file_prefix, timestamp);
 
         printf("Recording to file: %s\n", file_path);
 
@@ -422,7 +453,7 @@ int main(int argc, char **argv)
         ma_context_uninit(&context);
 
         char command[512];
-        snprintf(command, sizeof(command), "ffmpeg -i %s -ar 16000 %s_16000.wav", file_path, file_path);
+        snprintf(command, sizeof(command), "ffmpeg -i %s -ar 16000 -ac 1 %s_16000.wav", file_path, file_path);
         if (system(command) != 0)
         {
             printf("Failed to run ffmpeg command.\n");
@@ -432,20 +463,95 @@ int main(int argc, char **argv)
         char file_dir[512];
         snprintf(file_dir, sizeof(file_dir), "%s/%s", home, RECORD_FOLDER);
 
-        char whisper_command[1024];
-        snprintf(whisper_command, sizeof(whisper_command), "%s/whisper -m %s/ggml-base.bin -l pt %s_16000.wav --output-txt", file_dir, file_dir, file_path);
-        printf("Running Whisper command: %s\n", whisper_command);
-        if (system(whisper_command) != 0)
+        char audio_path[512];
+        snprintf(audio_path, sizeof(audio_path), "%s_16000.wav", file_path);
+
+        printf("%s\n", audio_path);
+        SF_INFO sf_info;
+        SNDFILE *audio_file = sf_open(audio_path, SFM_READ, &sf_info);
+        if (!audio_file)
         {
-            printf("Failed to run Whisper command.\n");
-            return -5;
+            fprintf(stderr, "Failed to open audio file: %s\n", audio_path);
+            whisper_free(ctx);
+            return 1;
         }
 
+        if (sf_info.channels != 1 || sf_info.samplerate != 16000)
+        {
+            fprintf(stderr, "Invalid audio format: expected mono 16kHz WAV\n");
+            printf("Audio format: %d channels, %d Hz, Format: %d\n", sf_info.channels, sf_info.samplerate, sf_info.format);
+            sf_close(audio_file);
+            whisper_free(ctx);
+            return 1;
+        }
+
+        size_t audio_size = sf_info.frames;
+        int16_t *audio_data = malloc(audio_size * sizeof(int16_t));
+        if (!audio_data)
+        {
+            fprintf(stderr, "Memory allocation failed\n");
+            sf_close(audio_file);
+            whisper_free(ctx);
+            return 1;
+        }
+
+        if (sf_read_short(audio_file, audio_data, audio_size) != audio_size)
+        {
+            fprintf(stderr, "Failed to read audio data\n");
+            free(audio_data);
+            sf_close(audio_file);
+            whisper_free(ctx);
+            return 1;
+        }
+
+        sf_close(audio_file);
+
+        float *audio_float_data = malloc(audio_size * sizeof(float));
+        if (!audio_float_data)
+        {
+            fprintf(stderr, "Memory allocation failed for float data\n");
+            free(audio_data);
+            whisper_free(ctx);
+            return 1;
+        }
+
+        for (size_t i = 0; i < audio_size; i++)
+        {
+            audio_float_data[i] = (float)audio_data[i] / 32768.0f;
+        }
+
+        free(audio_data);
+
+        struct whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+        wparams.language = "pt";
+        wparams.n_threads = 4;
+        wparams.strategy = WHISPER_SAMPLING_BEAM_SEARCH;
+        wparams.beam_search.beam_size = 5;
+
+        if (whisper_full_parallel(ctx, wparams, audio_float_data, audio_size, 1) != 0)
+        {
+            fprintf(stderr, "Failed to process audio\n");
+            free(audio_float_data);
+            whisper_free(ctx);
+            return 1;
+        }
+
+        const int segments = whisper_full_n_segments(ctx);
+        for (int i = 0; i < segments; i++)
+        {
+            const char *text = whisper_full_get_segment_text(ctx, i);
+            printf("Segment %d: %s\n", i, text);
+        }
+
+        free(audio_float_data);
+        whisper_free(ctx);
+
         snprintf(command, sizeof(command), "rm %s_16000.wav", file_path);
-        if (system(command) != 0) {
+        if (system(command) != 0)
+        {
             printf("Error deleting 16000.wav file.\n");
             return -1;
-        }        
+        }
     }
     else
     {

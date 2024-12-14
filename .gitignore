@@ -2,3 +2,6 @@ tcb
 *.o
 *.wav
 .vscode
+
+miniaudio
+whisper.cpp
