@@ -14,10 +14,10 @@
 #include <unistd.h>
 #include <assert.h>
 
-ma_result tcb_device_init(ma_device_id *device_id, tcb_device *device)
+ma_result tcb_device_init(ma_device_id *deviceId, tcb_device *device)
 {
     ma_device_config config = ma_device_config_init(ma_device_type_capture);
-    config.capture.pDeviceID = device_id;
+    config.capture.pDeviceID = deviceId;
     config.dataCallback = rb_write_callback;
 
     ma_result result = ma_device_init(NULL, &config, &device->device);
@@ -36,7 +36,7 @@ ma_result tcb_device_init(ma_device_id *device_id, tcb_device *device)
 
     device->device.pUserData = &device->rb;
 
-    ma_data_converter_config converterPrimaryConfig = ma_data_converter_config_init(
+    ma_data_converter_config converterConfig = ma_data_converter_config_init(
         device->device.capture.format,
         TARGET_FORMAT,
         device->device.capture.channels,
@@ -44,7 +44,7 @@ ma_result tcb_device_init(ma_device_id *device_id, tcb_device *device)
         device->device.sampleRate,
         TARGET_SAMPLE_RATE);
 
-    result = ma_data_converter_init(&converterPrimaryConfig, NULL, &device->converter);
+    result = ma_data_converter_init(&converterConfig, NULL, &device->converter);
     if (result != MA_SUCCESS)
     {
         fprintf(stderr, "Failed to initialize data converter.\n");
@@ -74,17 +74,17 @@ void tcb_device_uninit(tcb_device *device)
     ma_data_converter_uninit(&device->converter, NULL);
 }
 
-ma_result tcb_context_init(tcb_context *context, const char *pFilePath, ma_device_id *primary_device_id, ma_device_id *secundary_device_id)
+ma_result tcb_context_init(tcb_context *context, const char *pFilePath, ma_device_id *primaryDeviceId, ma_device_id *secundaryDeviceId)
 {
     ma_result result;
-    result = tcb_device_init(primary_device_id, &context->primary);
+    result = tcb_device_init(primaryDeviceId, &context->primary);
     if (result != MA_SUCCESS)
     {
         fprintf(stderr, "Failed to initialize primary device.\n");
         return result;
     }
 
-    result = tcb_device_init(secundary_device_id, &context->secundary);
+    result = tcb_device_init(secundaryDeviceId, &context->secundary);
     if (result != MA_SUCCESS)
     {
         fprintf(stderr, "Failed to initialize secundary device.\n");
@@ -189,11 +189,11 @@ void list_records()
     while ((entry = readdir(dir)) != NULL)
     {
         char *filename = entry->d_name;
-        size_t filename_len = strlen(filename);
+        size_t filenameLen = strlen(filename);
 
-        if (filename_len > 4 && strcmp(filename + filename_len - 4, ".wav") == 0)
+        if (filenameLen > 4 && strcmp(filename + filenameLen - 4, ".wav") == 0)
         {
-            filename[filename_len - 4] = '\0';
+            filename[filenameLen - 4] = '\0';
             printf("    %d: %s\n", index, filename);
 
             index++;
@@ -366,12 +366,12 @@ int main(int argc, char **argv)
             return -1;
         }
 
-        int primary_device = atoi(argv[2]);
-        int secondary_device = atoi(argv[3]);
+        int primaryDeviceId = atoi(argv[2]);
+        int secondaryDeviceId = atoi(argv[3]);
 
-        char file_path[512];
+        char filePath[512];
 
-        char *file_prefix = "tcb";
+        char *filePrefix = "tcb";
         char *language = "pt";
         bool use_gpu = false;
         bool no_transcribe = false;
@@ -379,7 +379,7 @@ int main(int argc, char **argv)
         {
             if (strcmp(argv[i], "--record-name") == 0 && i + 1 < argc)
             {
-                file_prefix = argv[i + 1];
+                filePrefix = argv[i + 1];
                 continue;
             }
 
@@ -408,9 +408,9 @@ int main(int argc, char **argv)
         char timestamp[64];
         strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", localtime(&now));
 
-        snprintf(file_path, sizeof(file_path), "%s/%s/%s_%s.wav", home, RECORD_FOLDER, file_prefix, timestamp);
+        snprintf(filePath, sizeof(filePath), "%s/%s/%s_%s.wav", home, RECORD_FOLDER, filePrefix, timestamp);
 
-        printf("Recording to file: %s\n", file_path);
+        printf("Recording to file: %s\n", filePath);
 
         ma_context context;
         if (ma_context_init(NULL, 0, NULL, &context) != MA_SUCCESS)
@@ -430,7 +430,7 @@ int main(int argc, char **argv)
         }
 
         tcb_context tcbContext;
-        ma_result result = tcb_context_init(&tcbContext, file_path, &pCaptureDeviceInfos[primary_device].id, &pCaptureDeviceInfos[secondary_device].id);
+        ma_result result = tcb_context_init(&tcbContext, filePath, &pCaptureDeviceInfos[primaryDeviceId].id, &pCaptureDeviceInfos[secondaryDeviceId].id);
         if (result != MA_SUCCESS)
         {
             fprintf(stderr, "Failed to initialize tcb context.\n");
@@ -457,16 +457,16 @@ int main(int argc, char **argv)
 
         ma_context_uninit(&context);
 
-        printf("Audio file saved to: %s\n", file_path);
+        printf("Audio file saved to: %s\n", filePath);
 
         if (!no_transcribe)
         {
             ma_decoder_config decoder_config = ma_decoder_config_init(TARGET_FORMAT, TARGET_CHANNELS, TARGET_SAMPLE_RATE);
 
             ma_decoder decoder;
-            if (ma_decoder_init_file(file_path, &decoder_config, &decoder) != MA_SUCCESS)
+            if (ma_decoder_init_file(filePath, &decoder_config, &decoder) != MA_SUCCESS)
             {
-                fprintf(stderr, "Failed to initialize decoder for file: %s\n", file_path);
+                fprintf(stderr, "Failed to initialize decoder for file: %s\n", filePath);
             }
 
             ma_uint64 framesSize;
@@ -514,8 +514,8 @@ int main(int argc, char **argv)
                 return 1;
             }
 
-            char *output_filepath = (char *)malloc(strlen(file_path) + 1);
-            strcpy(output_filepath, file_path);
+            char *output_filepath = (char *)malloc(strlen(filePath) + 1);
+            strcpy(output_filepath, filePath);
             char *extension = strstr(output_filepath, ".wav");
             if (extension == NULL)
             {
