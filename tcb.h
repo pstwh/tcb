@@ -1,7 +1,7 @@
 #ifndef TCB_H
 #define TCB_H
 
-#include "miniaudio/miniaudio.h"
+#include "miniaudio.h"
 #include "whisper.h"
 #include <pthread.h>
 

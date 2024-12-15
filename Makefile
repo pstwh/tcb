@@ -10,8 +10,9 @@ CXXFLAGS = -Wall -Wextra -std=c++11 -fopenmp -DGGML_USE_CUDA -I$(CUDA_INCLUDE)
 
 INCLUDES = \
 	-I../ \
-	-Iwhisper.cpp/include/ \
-	-Iwhisper.cpp/ggml/include \
+	-Ilib/miniaudio \
+	-Ilib/whisper.cpp/include/ \
+	-Ilib/whisper.cpp/ggml/include \
 	-I$(CUDA_INCLUDE) \
 	-I$(CUDA_PATH)/targets/$(UNAME_M)-linux/include
 
@@ -20,7 +21,7 @@ LDFLAGS = \
 	-lm \
 	-ldl \
 	-lsndfile \
-	whisper.cpp/libwhisper.a \
+	lib/whisper.cpp/libwhisper.a \
 	-lcuda \
 	-lcublas \
 	-lculibos \
@@ -36,8 +37,8 @@ LDFLAGS = \
 TARGET = tcb
 SRC = tcb.c
 OBJ = $(SRC:.c=.o)
-WHISPER_LIB = whisper.cpp/libwhisper.a
-WHISPER_DIR = whisper.cpp
+WHISPER_LIB = lib/whisper.cpp/libwhisper.a
+WHISPER_DIR = lib/whisper.cpp
 
 .PHONY: all clean install uninstall whisper
 

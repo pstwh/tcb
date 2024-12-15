@@ -1,6 +1,12 @@
 [submodule "miniaudio"]
-	path = miniaudio
+	path = lib/miniaudio
 	url = https://github.com/mackron/miniaudio
 [submodule "whisper.cpp"]
-	path = whisper.cpp
+	path = lib/whisper.cpp
 	url = https://github.com/ggerganov/whisper.cpp
+[submodule "lib/whisper.cpp"]
+	path = lib/whisper.cpp
+	url = https://github.com/ggerganov/whisper.cpp.git
+[submodule "lib/miniaudio"]
+	path = lib/miniaudio
+	url = https://github.com/mackron/miniaudio
