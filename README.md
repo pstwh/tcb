@@ -87,5 +87,5 @@ $ tcb transcribe /home/{user}/tcb/tcb_20241212_010202.wav --language "en" --use-
 - [ ] Allow more than two devices.
 - [ ] Better project structure.
 - [ ] Shortcut for model download.
-- [~] Add cpu and gpu build (currently is using cuda by default and you need to build whisper.cpp first).
+- [ ] Add cpu and gpu build (currently is using cuda by default and you need to build whisper.cpp first).
 - [ ] In the future maybe for a new project add a GUI for easier device selection and recording management.
