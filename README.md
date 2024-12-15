@@ -6,7 +6,6 @@
 
 - Record from two devices at once (e.g., microphone and system audio).
 - Mix and encode the audio into a single file.
-- Playback recorded files (TODO).
 - Transcribe audio using Whisper.
 
 
@@ -20,18 +19,46 @@ Usage: tcb <command> [options]
 Commands:
     list-devices            List available devices
     list-records            List all recorded files
-    play <name/number>      Play a specific record (TODO)
     record <dev1> <dev2>    Record audio from specified devices
            --record-name <name>   Name of the recording
            --language <language>  Language of the recording
+           --use-gpu       Use gpu inference
+           --no-transcribe   Do not transcribe after recording
+    transcribe <file>       Transcribe a specific file
+           --language <language>  Language of the recording
+           --use-gpu       Use gpu inference
 ```
 
-### Example: Recording Audio
+### Example: Listing Devices
+
+To list the available devices, run `tcb list-devices`.
+
+```bash
+$ tcb list-devices
+Playback Devices:
+    0: Headphone
+Capture Devices:
+    0: Microphone
+    1: Monitor Headphone
+```
+
+### Example: Listing Records
+
+To list all recorded files, run `tcb list-records`.
+
+```bash
+$ tcb list-records
+Available Records:
+    0: tcb_20241212_010202.wav
+    1: tcb_20241212_010203.wav
+```
+
+### Example: Recording Audio and Transcribing
 
 To start recording from two devices, use the `record` command with the device indices:
 
 ```bash
-$ tcb record 0 1
+$ tcb record 0 1 --record-name "My Recording" --language "en" --use-gpu
 Recording to file: /home/{user}/tcb/tcb_20241212_010202.wav
 Press Enter to stop recording..
 ```
@@ -40,27 +67,16 @@ This will record audio from device `0` (e.g., microphone) and device `1` (e.g., 
 You can check the device indices by running `tcb list-devices`.
 
 
-### Transcribing Audio with Whisper
+### Transcribing Existing Audio with Whisper
 
 After recording, you can transcribe the audio using Whisper. First, ensure you've installed Whisper and downloaded the models as described above.
 
 1. Start recording:
 
 ```bash
-$ tcb record 0 1
-Recording to file: /home/{user}/tcb/tcb_20241212_010202.wav
-Press Enter to stop recording..
+$ tcb transcribe /home/{user}/tcb/tcb_20241212_010202.wav --language "en" --use-gpu
 ```
 
-2. It will automatically use Whisper for transcription.
-You will need to have whisper bin and base model inside ```/home/{user}/tcb/``` folder.
-
-
-3. View the transcription:
-
-```bash
-$ cat /home/{user}/tcb/tcb_20241212_010202.wav_16000.txt
-```
 
 ## TODO
 
