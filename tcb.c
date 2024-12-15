@@ -319,6 +319,8 @@ void *rb_read_thread(void *arg)
     return NULL;
 }
 
+static void cb_log_disable(enum ggml_log_level , const char * , void * ) { }
+
 int main(int argc, char **argv)
 {
     ensure_record_folder();
@@ -373,30 +375,30 @@ int main(int argc, char **argv)
         char *language = "pt";
         bool use_gpu = false;
         bool no_transcribe = false;
-        for (int i = 4; i < argc; i++)
+        for (int i = 0; i < argc; i++)
         {
             if (strcmp(argv[i], "--record-name") == 0 && i + 1 < argc)
             {
                 file_prefix = argv[i + 1];
-                break;
+                continue;
             }
 
             if (strcmp(argv[i], "--language") == 0 && i + 1 < argc)
             {
                 language = argv[i + 1];
-                break;
+                continue;
             }
 
             if (strcmp(argv[i], "--use-gpu") == 0)
             {
                 use_gpu = true;
-                break;
+                continue;
             }
 
             if (strcmp(argv[i], "--no-transcribe") == 0)
             {
                 no_transcribe = true;
-                break;
+                continue;
             }
         }
 
@@ -438,20 +440,12 @@ int main(int argc, char **argv)
         {
             fprintf(stderr, "Failed to start primary device.\n");
         }
-        else
-        {
-            printf("Primary device started.\n");
-        }
-
+        
         if (tcb_device_start(&tcbContext.secundary) != MA_SUCCESS)
         {
             fprintf(stderr, "Failed to start secundary device.\n");
         }
-        else
-        {
-            printf("Secundary device started.\n");
-        }
-
+        
         pthread_t thread;
         pthread_create(&thread, NULL, rb_read_thread, (void *)(&tcbContext));
 
@@ -463,7 +457,7 @@ int main(int argc, char **argv)
 
         ma_context_uninit(&context);
 
-        printf("%s\n", file_path);
+        printf("Audio file saved to: %s\n", file_path);
 
         if (!no_transcribe)
         {
@@ -493,6 +487,7 @@ int main(int argc, char **argv)
 
             char model_path[512];
             snprintf(model_path, sizeof(model_path), "%s/%s/%s", home, RECORD_FOLDER, MODEL_FILE);
+            whisper_log_set(cb_log_disable, NULL);
             struct whisper_context_params cparams = whisper_context_default_params();
             cparams.use_gpu = use_gpu;
             cparams.flash_attn = true;
@@ -509,6 +504,7 @@ int main(int argc, char **argv)
             wparams.n_threads = 4;
             wparams.strategy = WHISPER_SAMPLING_BEAM_SEARCH;
             wparams.beam_search.beam_size = 5;
+            
 
             if (whisper_full_parallel(ctx, wparams, audioBuffer, framesSize, 1) != 0)
             {
@@ -532,6 +528,7 @@ int main(int argc, char **argv)
             strcpy(extension, ".txt");
 
             FILE *outfile = fopen(output_filepath, "w");
+            printf("Transcription saved to: %s\n", output_filepath);
 
             const int segments = whisper_full_n_segments(ctx);
             for (int i = 0; i < segments; i++)
