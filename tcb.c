@@ -1,6 +1,7 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio/miniaudio.h"
 #include "whisper.h"
+#include "tcb.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -10,24 +11,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sndfile.h>
-
-#define RECORD_FOLDER ".tcb"
-#define BUFFER_SIZE_IN_FRAMES 1024 * 16
-
-#define TARGET_FORMAT ma_format_f32
-#define TARGET_CHANNELS 1
-#define TARGET_SAMPLE_RATE 16000
-
-#define MODEL_FILE "ggml-large-v3-turbo-q5_0.bin"
-
-void rb_write_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uint32 frameCount);
-
-typedef struct
-{
-    ma_device device;
-    ma_pcm_rb rb;
-    ma_data_converter converter;
-} tcb_device;
+#include <unistd.h>
+#include <assert.h>
 
 ma_result tcb_device_init(ma_device_id *device_id, tcb_device *device)
 {
@@ -38,14 +23,14 @@ ma_result tcb_device_init(ma_device_id *device_id, tcb_device *device)
     ma_result result = ma_device_init(NULL, &config, &device->device);
     if (result != MA_SUCCESS)
     {
-        printf("Failed to initialize capture device.\n");
+        fprintf(stderr, "Failed to initialize capture device.\n");
         return result;
     }
 
     result = ma_pcm_rb_init(device->device.capture.format, device->device.capture.channels, BUFFER_SIZE_IN_FRAMES, NULL, NULL, &device->rb);
     if (result != MA_SUCCESS)
     {
-        printf("Failed to initialize ring buffer.\n");
+        fprintf(stderr, "Failed to initialize ring buffer.\n");
         return result;
     }
 
@@ -62,7 +47,7 @@ ma_result tcb_device_init(ma_device_id *device_id, tcb_device *device)
     result = ma_data_converter_init(&converterPrimaryConfig, NULL, &device->converter);
     if (result != MA_SUCCESS)
     {
-        printf("Failed to initialize data converter.\n");
+        fprintf(stderr, "Failed to initialize data converter.\n");
         return result;
     }
 
@@ -74,7 +59,7 @@ ma_result tcb_device_start(tcb_device *device)
     ma_result result = ma_device_start(&device->device);
     if (result != MA_SUCCESS)
     {
-        printf("Failed to start device.\n");
+        fprintf(stderr, "Failed to start device.\n");
         ma_device_uninit(&device->device);
         return result;
     }
@@ -89,27 +74,20 @@ void tcb_device_uninit(tcb_device *device)
     ma_data_converter_uninit(&device->converter, NULL);
 }
 
-typedef struct
-{
-    tcb_device primary;
-    tcb_device secundary;
-    ma_encoder encoder;
-} tcb_context;
-
 ma_result tcb_context_init(tcb_context *context, const char *pFilePath, ma_device_id *primary_device_id, ma_device_id *secundary_device_id)
 {
     ma_result result;
     result = tcb_device_init(primary_device_id, &context->primary);
     if (result != MA_SUCCESS)
     {
-        printf("Failed to initialize primary device.\n");
+        fprintf(stderr, "Failed to initialize primary device.\n");
         return result;
     }
 
     result = tcb_device_init(secundary_device_id, &context->secundary);
     if (result != MA_SUCCESS)
     {
-        printf("Failed to initialize secundary device.\n");
+        fprintf(stderr, "Failed to initialize secundary device.\n");
         return result;
     }
 
@@ -122,7 +100,7 @@ ma_result tcb_context_init(tcb_context *context, const char *pFilePath, ma_devic
     result = ma_encoder_init_file(pFilePath, &encoderConfig, &context->encoder);
     if (result != MA_SUCCESS)
     {
-        printf("Failed to initialize output file.\n");
+        fprintf(stderr, "Failed to initialize output file.\n");
         return result;
     }
 
@@ -141,7 +119,7 @@ void ensure_record_folder()
     char *home = getenv("HOME");
     if (home == NULL)
     {
-        printf("Failed to get HOME directory.\n");
+        fprintf(stderr, "Failed to get HOME directory.\n");
         exit(1);
     }
 
@@ -153,7 +131,7 @@ void ensure_record_folder()
     {
         if (mkdir(folder_path, 0700) != 0)
         {
-            printf("Failed to create folder: %s\n", folder_path);
+            fprintf(stderr, "Failed to create folder: %s\n", folder_path);
             exit(1);
         }
     }
@@ -168,7 +146,7 @@ void list_devices(ma_context *context)
 
     if (ma_context_get_devices(context, &pPlaybackDeviceInfos, &playbackDeviceCount, &pCaptureDeviceInfos, &captureDeviceCount) != MA_SUCCESS)
     {
-        printf("Failed to retrieve device information.\n");
+        fprintf(stderr, "Failed to retrieve device information.\n");
         return;
     }
 
@@ -188,13 +166,20 @@ void list_devices(ma_context *context)
 void list_records()
 {
     char *home = getenv("HOME");
+    if (home == NULL)
+    {
+        fprintf(stderr, "Error: HOME environment variable not set.\n");
+        return;
+    }
+
     char folder_path[512];
     snprintf(folder_path, sizeof(folder_path), "%s/%s", home, RECORD_FOLDER);
 
     DIR *dir = opendir(folder_path);
     if (dir == NULL)
     {
-        printf("Failed to open record folder: %s\n", folder_path);
+        perror("Failed to open record folder");
+        fprintf(stderr, "Folder path: %s\n", folder_path);
         return;
     }
 
@@ -203,57 +188,19 @@ void list_records()
     int index = 0;
     while ((entry = readdir(dir)) != NULL)
     {
-        // if (entry->d_type == DT_REG) {
-        printf("    %d: %s\n", index, entry->d_name);
-        index++;
-        // }
+        char *filename = entry->d_name;
+        size_t filename_len = strlen(filename);
+
+        if (filename_len > 4 && strcmp(filename + filename_len - 4, ".wav") == 0)
+        {
+            filename[filename_len - 4] = '\0';
+            printf("    %d: %s\n", index, filename);
+
+            index++;
+        }
     }
 
     closedir(dir);
-}
-
-void play_record(const char *record_name)
-{
-    char *home = getenv("HOME");
-    char file_path[512];
-    snprintf(file_path, sizeof(file_path), "%s/%s/%s", home, RECORD_FOLDER, record_name);
-
-    ma_decoder decoder;
-    if (ma_decoder_init_file(file_path, NULL, &decoder) != MA_SUCCESS)
-    {
-        printf("Failed to initialize decoder for file: %s\n", file_path);
-        return;
-    }
-
-    ma_device_config deviceConfig = ma_device_config_init(ma_device_type_playback);
-    deviceConfig.playback.format = decoder.outputFormat;
-    deviceConfig.playback.channels = decoder.outputChannels;
-    deviceConfig.sampleRate = decoder.outputSampleRate;
-    // deviceConfig.dataCallback = ma_data_callback;
-    deviceConfig.pUserData = &decoder;
-
-    ma_device device;
-    if (ma_device_init(NULL, &deviceConfig, &device) != MA_SUCCESS)
-    {
-        printf("Failed to initialize playback device.\n");
-        ma_decoder_uninit(&decoder);
-        return;
-    }
-
-    if (ma_device_start(&device) != MA_SUCCESS)
-    {
-        printf("Failed to start playback device.\n");
-        ma_device_uninit(&device);
-        ma_decoder_uninit(&decoder);
-        return;
-    }
-
-    printf("Playing record: %s\n", record_name);
-    printf("Press Enter to stop playback...\n");
-    getchar();
-
-    ma_device_uninit(&device);
-    ma_decoder_uninit(&decoder);
 }
 
 void rb_write_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uint32 frameCount)
@@ -267,19 +214,20 @@ void rb_write_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma
     void *rbWrite;
     if (ma_pcm_rb_acquire_write(rb, &framesToWrite, &rbWrite) != MA_SUCCESS)
     {
-        printf("Failed to acquire write buffer.\n");
+        fprintf(stderr, "Failed to acquire write buffer.\n");
         return;
     }
 
     memcpy(rbWrite, pInput, framesToWrite * bytesPerFrame);
     if (ma_pcm_rb_commit_write(rb, framesToWrite) != MA_SUCCESS)
     {
-        printf("Failed to commit write buffer.\n");
+        fprintf(stderr, "Failed to commit write buffer.\n");
     }
     else
     {
         // printf("(WRITE) Committed %u frames.\n", framesToWrite);
     }
+    (void)pOutput;
 }
 
 void *rb_read_thread(void *arg)
@@ -317,7 +265,7 @@ void *rb_read_thread(void *arg)
                 if (ma_data_converter_get_expected_output_frame_count(converterPrimary, frameCountOld, &frameCountConvertedPrimary) != MA_SUCCESS ||
                     ma_data_converter_get_expected_output_frame_count(converterSecundary, frameCountOld, &frameCountConvertedSecundary) != MA_SUCCESS)
                 {
-                    printf("Failed to get expected output frame count.\n");
+                    fprintf(stderr, "Failed to get expected output frame count.\n");
                     ma_pcm_rb_commit_read(rb, frameCount);
                     ma_pcm_rb_commit_read(rbSecundary, frameCount);
                     continue;
@@ -328,7 +276,7 @@ void *rb_read_thread(void *arg)
                 ma_float *rbOtherBufferConverted = malloc(frameCountConverted * bytesPerFrameNew);
                 if (!rbBufferConverted || !rbOtherBufferConverted)
                 {
-                    printf("Failed to allocate memory for converted buffers\n");
+                    fprintf(stderr, "Failed to allocate memory for converted buffers\n");
                     ma_pcm_rb_commit_read(rb, frameCount);
                     ma_pcm_rb_commit_read(rbSecundary, frameCount);
                     continue;
@@ -341,7 +289,7 @@ void *rb_read_thread(void *arg)
                     (frameCountOld = frameCount,
                      ma_data_converter_process_pcm_frames(converterSecundary, rbOtherBuffer, &frameCountOld, rbOtherBufferConverted, &framesConvertedSecundary) != MA_SUCCESS))
                 {
-                    printf("Failed to convert buffer(s).\n");
+                    fprintf(stderr, "Failed to convert buffer(s).\n");
                     free(rbBufferConverted);
                     free(rbOtherBufferConverted);
                     ma_pcm_rb_commit_read(rb, frameCount);
@@ -357,7 +305,7 @@ void *rb_read_thread(void *arg)
                 ma_uint64 framesWritten;
                 if (ma_encoder_write_pcm_frames(encoder, rbBufferConverted, frameCountConverted, &framesWritten) != MA_SUCCESS)
                 {
-                    printf("Failed to write to encoder.\n");
+                    fprintf(stderr, "Failed to write to encoder.\n");
                 }
 
                 ma_pcm_rb_commit_read(rb, frameCount);
@@ -373,27 +321,12 @@ void *rb_read_thread(void *arg)
 
 int main(int argc, char **argv)
 {
-    char *home = getenv("HOME");
-    char model_path[512];
-    snprintf(model_path, sizeof(model_path), "%s/%s/%s", home, RECORD_FOLDER, MODEL_FILE);
-
-    struct whisper_context_params cparams = whisper_context_default_params();
-    cparams.use_gpu = true;
-    cparams.flash_attn = true;
-    cparams.dtw_aheads_preset = WHISPER_AHEADS_LARGE_V3_TURBO;
-    struct whisper_context *ctx = whisper_init_from_file_with_params(model_path, cparams);
-    if (!ctx)
-    {
-        printf("Failed to initialize whisper context.\n");
-        return 1;
-    }
-
     ensure_record_folder();
 
     ma_context context;
     if (ma_context_init(NULL, 0, NULL, &context) != MA_SUCCESS)
     {
-        printf("Failed to initialize context.\n");
+        fprintf(stderr, "Failed to initialize context.\n");
         return -1;
     }
 
@@ -407,6 +340,8 @@ int main(int argc, char **argv)
         printf("    record <dev1> <dev2>   Record using specified devices\n");
         printf("           --record-name <name>   Name of the recording\n");
         printf("           --language <language>  Language of the recording\n");
+        printf("           --use-gpu       Use gpu inference \n");
+        printf("           --no-transcribe   Do not transcribe after recording\n");
         return 0;
     }
 
@@ -418,20 +353,14 @@ int main(int argc, char **argv)
     {
         list_records();
     }
-    else if (strcmp(argv[1], "play") == 0)
+    else if (strcmp(argv[1], "transcribe") == 0)
     {
-        if (argc < 3)
-        {
-            printf("Specify the record name or number to play.\n");
-            return -1;
-        }
-        play_record(argv[2]);
     }
     else if (strcmp(argv[1], "record") == 0)
     {
         if (argc < 4)
         {
-            printf("Specify primary and secondary device IDs for recording.\n");
+            fprintf(stderr, "Specify primary and secondary device IDs for recording.\n");
             return -1;
         }
 
@@ -439,10 +368,11 @@ int main(int argc, char **argv)
         int secondary_device = atoi(argv[3]);
 
         char file_path[512];
-        char *home = getenv("HOME");
 
         char *file_prefix = "tcb";
         char *language = "pt";
+        bool use_gpu = false;
+        bool no_transcribe = false;
         for (int i = 4; i < argc; i++)
         {
             if (strcmp(argv[i], "--record-name") == 0 && i + 1 < argc)
@@ -456,7 +386,21 @@ int main(int argc, char **argv)
                 language = argv[i + 1];
                 break;
             }
+
+            if (strcmp(argv[i], "--use-gpu") == 0)
+            {
+                use_gpu = true;
+                break;
+            }
+
+            if (strcmp(argv[i], "--no-transcribe") == 0)
+            {
+                no_transcribe = true;
+                break;
+            }
         }
+
+        char *home = getenv("HOME");
 
         time_t now = time(NULL);
         char timestamp[64];
@@ -469,7 +413,7 @@ int main(int argc, char **argv)
         ma_context context;
         if (ma_context_init(NULL, 0, NULL, &context) != MA_SUCCESS)
         {
-            printf("Failed to initialize context.\n");
+            fprintf(stderr, "Failed to initialize context.\n");
             return -2;
         }
 
@@ -479,24 +423,20 @@ int main(int argc, char **argv)
         ma_uint32 captureDeviceCount;
         if (ma_context_get_devices(&context, &pPlaybackDeviceInfos, &playbackDeviceCount, &pCaptureDeviceInfos, &captureDeviceCount) != MA_SUCCESS)
         {
-            printf("Failed to retrieve device information.\n");
+            fprintf(stderr, "Failed to retrieve device information.\n");
             return -3;
         }
-
-        ma_device_config deviceConfigPrimary = ma_device_config_init(ma_device_type_capture);
-        deviceConfigPrimary.capture.pDeviceID = &pCaptureDeviceInfos[primary_device].id;
-        deviceConfigPrimary.dataCallback = rb_write_callback;
 
         tcb_context tcbContext;
         ma_result result = tcb_context_init(&tcbContext, file_path, &pCaptureDeviceInfos[primary_device].id, &pCaptureDeviceInfos[secondary_device].id);
         if (result != MA_SUCCESS)
         {
-            printf("Failed to initialize tcb context.\n");
+            fprintf(stderr, "Failed to initialize tcb context.\n");
         }
 
         if (tcb_device_start(&tcbContext.primary) != MA_SUCCESS)
         {
-            printf("Failed to start primary device.\n");
+            fprintf(stderr, "Failed to start primary device.\n");
         }
         else
         {
@@ -505,7 +445,7 @@ int main(int argc, char **argv)
 
         if (tcb_device_start(&tcbContext.secundary) != MA_SUCCESS)
         {
-            printf("Failed to start secundary device.\n");
+            fprintf(stderr, "Failed to start secundary device.\n");
         }
         else
         {
@@ -525,72 +465,89 @@ int main(int argc, char **argv)
 
         printf("%s\n", file_path);
 
-        ma_decoder_config decoder_config = ma_decoder_config_init(TARGET_FORMAT, TARGET_CHANNELS, TARGET_SAMPLE_RATE);
-
-        ma_decoder decoder;
-        if (ma_decoder_init_file(file_path, &decoder_config, &decoder) != MA_SUCCESS)
+        if (!no_transcribe)
         {
-            printf("Failed to initialize decoder for file: %s\n", file_path);
-        }
+            ma_decoder_config decoder_config = ma_decoder_config_init(TARGET_FORMAT, TARGET_CHANNELS, TARGET_SAMPLE_RATE);
 
-        ma_uint64 framesSize;
-        if (ma_decoder_get_length_in_pcm_frames(&decoder, &framesSize) != MA_SUCCESS)
-        {
-            printf("Failed to get length of file.\n");
-        }
+            ma_decoder decoder;
+            if (ma_decoder_init_file(file_path, &decoder_config, &decoder) != MA_SUCCESS)
+            {
+                fprintf(stderr, "Failed to initialize decoder for file: %s\n", file_path);
+            }
 
-        ma_uint32 bytesPerFrameNew = ma_get_bytes_per_frame(TARGET_FORMAT, TARGET_CHANNELS);
-        ma_uint64 bufferSize = framesSize * bytesPerFrameNew;
+            ma_uint64 framesSize;
+            if (ma_decoder_get_length_in_pcm_frames(&decoder, &framesSize) != MA_SUCCESS)
+            {
+                fprintf(stderr, "Failed to get length of file.\n");
+            }
 
-        ma_float *audioBuffer = malloc(bufferSize);
-        ma_uint64 framesRead;
-        if (ma_decoder_read_pcm_frames(&decoder, audioBuffer, framesSize, &framesRead) != MA_SUCCESS)
-        {
-            printf("Failed to read audio data.\n");
-        }
+            ma_uint32 bytesPerFrameNew = ma_get_bytes_per_frame(TARGET_FORMAT, TARGET_CHANNELS);
+            ma_uint64 bufferSize = framesSize * bytesPerFrameNew;
 
-        struct whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-        wparams.language = "pt";
-        wparams.n_threads = 4;
-        wparams.strategy = WHISPER_SAMPLING_BEAM_SEARCH;
-        wparams.beam_search.beam_size = 5;
+            ma_float *audioBuffer = malloc(bufferSize);
+            ma_uint64 framesRead;
+            if (ma_decoder_read_pcm_frames(&decoder, audioBuffer, framesSize, &framesRead) != MA_SUCCESS)
+            {
+                fprintf(stderr, "Failed to read audio data.\n");
+            }
 
-        if (whisper_full_parallel(ctx, wparams, audioBuffer, framesSize, 1) != 0)
-        {
-            fprintf(stderr, "Failed to process audio\n");
+            char model_path[512];
+            snprintf(model_path, sizeof(model_path), "%s/%s/%s", home, RECORD_FOLDER, MODEL_FILE);
+            struct whisper_context_params cparams = whisper_context_default_params();
+            cparams.use_gpu = use_gpu;
+            cparams.flash_attn = true;
+            cparams.dtw_aheads_preset = WHISPER_AHEADS_LARGE_V3_TURBO;
+            struct whisper_context *ctx = whisper_init_from_file_with_params(model_path, cparams);
+            if (!ctx)
+            {
+                fprintf(stderr, "Failed to initialize whisper context.\n");
+                return 1;
+            }
+
+            struct whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+            wparams.language = language;
+            wparams.n_threads = 4;
+            wparams.strategy = WHISPER_SAMPLING_BEAM_SEARCH;
+            wparams.beam_search.beam_size = 5;
+
+            if (whisper_full_parallel(ctx, wparams, audioBuffer, framesSize, 1) != 0)
+            {
+                fprintf(stderr, "Failed to process audio\n");
+                free(audioBuffer);
+                whisper_free(ctx);
+                return 1;
+            }
+
+            char *output_filepath = (char *)malloc(strlen(file_path) + 1);
+            strcpy(output_filepath, file_path);
+            char *extension = strstr(output_filepath, ".wav");
+            if (extension == NULL)
+            {
+                fprintf(stderr, "Error: input file is not a .wav file\n");
+                free(audioBuffer);
+                whisper_free(ctx);
+                return 1;
+            }
+
+            strcpy(extension, ".txt");
+
+            FILE *outfile = fopen(output_filepath, "w");
+
+            const int segments = whisper_full_n_segments(ctx);
+            for (int i = 0; i < segments; i++)
+            {
+                const char *text = whisper_full_get_segment_text(ctx, i);
+                printf("%s\n", text);
+                fprintf(outfile, "%s\n", text);
+            }
+            fclose(outfile);
             free(audioBuffer);
             whisper_free(ctx);
-            return 1;
         }
-
-        char* output_filepath = (char*)malloc(strlen(file_path) + 1);
-        strcpy(output_filepath, file_path);
-        char* extension = strstr(output_filepath, ".wav");
-        if(extension == NULL) {
-            printf("Error: input file is not a .wav file\n");
-            free(audioBuffer);
-            whisper_free(ctx);
-            return 1;
-        } 
-
-        strcpy(extension, ".txt");
-
-        FILE *outfile = fopen(output_filepath, "w");
-
-        const int segments = whisper_full_n_segments(ctx);
-        for (int i = 0; i < segments; i++)
-        {
-            const char *text = whisper_full_get_segment_text(ctx, i);
-            printf("%s\n", text);
-            fprintf(outfile, "%s\n", text);
-        }
-        fclose(outfile);
-        free(audioBuffer);
-        whisper_free(ctx);
     }
     else
     {
-        printf("Unknown command: %s\n", argv[1]);
+        fprintf(stderr, "Unknown command: %s\n", argv[1]);
     }
 
     ma_context_uninit(&context);
