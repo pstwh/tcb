@@ -223,10 +223,7 @@ void rb_write_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma
     {
         fprintf(stderr, "Failed to commit write buffer.\n");
     }
-    else
-    {
-        // printf("(WRITE) Committed %u frames.\n", framesToWrite);
-    }
+    
     (void)pOutput;
 }
 
@@ -338,12 +335,14 @@ int main(int argc, char **argv)
         printf("Commands:\n");
         printf("    list-devices            List available devices\n");
         printf("    list-records            List all recorded files\n");
-        printf("    play <name/number>      Play a specific record\n");
         printf("    record <dev1> <dev2>   Record using specified devices\n");
         printf("           --record-name <name>   Name of the recording\n");
         printf("           --language <language>  Language of the recording\n");
         printf("           --use-gpu       Use gpu inference \n");
         printf("           --no-transcribe   Do not transcribe after recording\n");
+        printf("    transcribe <file>       Transcribe a specific file\n");
+        printf("           --language <language>  Language of the recording\n");
+        printf("           --use-gpu       Use gpu inference \n");
         return 0;
     }
 
