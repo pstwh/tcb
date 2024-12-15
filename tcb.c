@@ -319,7 +319,7 @@ void *rb_read_thread(void *arg)
     return NULL;
 }
 
-static void cb_log_disable(enum ggml_log_level , const char * , void * ) { }
+static void cb_log_disable(enum ggml_log_level, const char *, void *) {}
 
 int main(int argc, char **argv)
 {
@@ -357,6 +357,147 @@ int main(int argc, char **argv)
     }
     else if (strcmp(argv[1], "transcribe") == 0)
     {
+        if (argc < 3)
+        {
+            fprintf(stderr, "Specify the file name to transcribe.\n");
+            return -1;
+        }
+
+        char *language = "pt";
+        bool use_gpu = false;
+        bool no_transcribe = false;
+        for (int i = 0; i < argc; i++)
+        {
+            if (strcmp(argv[i], "--language") == 0 && i + 1 < argc)
+            {
+                language = argv[i + 1];
+                continue;
+            }
+
+            if (strcmp(argv[i], "--use-gpu") == 0)
+            {
+                use_gpu = true;
+                continue;
+            }
+
+            if (strcmp(argv[i], "--no-transcribe") == 0)
+            {
+                no_transcribe = true;
+                continue;
+            }
+        }
+
+        char *filePath = argv[2];
+        const char *dot = strrchr(filePath, '.');
+        if (!dot || dot == filePath)
+        {
+            fprintf(stderr, "Error: input file does not have a valid extension\n");
+            return -1;
+        }
+
+        printf("Transcribing file: %s\n", filePath);
+        ma_decoder decoder;
+        if (ma_decoder_init_file(filePath, NULL, &decoder) != MA_SUCCESS)
+        {
+            fprintf(stderr, "Failed to initialize decoder for file: %s\n", filePath);
+            return -1;
+        }
+
+        ma_uint64 framesSize;
+        if (ma_decoder_get_length_in_pcm_frames(&decoder, &framesSize) != MA_SUCCESS)
+        {
+            fprintf(stderr, "Failed to get length of file.\n");
+        }
+
+        ma_uint32 bytesPerFrame = ma_get_bytes_per_frame(decoder.outputFormat, decoder.outputChannels);
+        ma_uint32 bytesPerFrameNew = ma_get_bytes_per_frame(TARGET_FORMAT, TARGET_CHANNELS);
+        ma_uint64 bufferSize = framesSize * bytesPerFrame;
+
+        ma_float *audioBuffer = malloc(bufferSize);
+        ma_uint64 framesRead;
+        if (ma_decoder_read_pcm_frames(&decoder, audioBuffer, framesSize, &framesRead) != MA_SUCCESS)
+        {
+            fprintf(stderr, "Failed to read audio data.\n");
+        }
+
+        ma_data_converter_config converterConfig = ma_data_converter_config_init(
+            decoder.outputFormat,
+            TARGET_FORMAT,
+            decoder.outputChannels,
+            TARGET_CHANNELS,
+            decoder.outputSampleRate,
+            TARGET_SAMPLE_RATE);
+
+        ma_data_converter converter;
+        ma_result result = ma_data_converter_init(&converterConfig, NULL, &converter);
+        if (result != MA_SUCCESS)
+        {
+            fprintf(stderr, "Failed to initialize data converter.\n");
+            return result;
+        }
+
+        ma_uint64 framesReadOut;
+        if (ma_data_converter_get_expected_output_frame_count(&converter, framesRead, &framesReadOut) != MA_SUCCESS)
+        {
+            fprintf(stderr, "Failed to get expected output frame count.\n");
+        }
+
+        ma_float *audioBufferConverted = malloc(framesReadOut * bytesPerFrameNew);
+
+        ma_uint64 frameCountOut;
+        result = ma_data_converter_process_pcm_frames(&converter, audioBuffer, &framesSize, audioBufferConverted, &frameCountOut);
+        if (result != MA_SUCCESS)
+        {
+            fprintf(stderr, "Failed to convert buffer(s).\n");
+        }
+
+        char *home = getenv("HOME");
+        char model_path[512];
+        snprintf(model_path, sizeof(model_path), "%s/%s/%s", home, RECORD_FOLDER, MODEL_FILE);
+        whisper_log_set(cb_log_disable, NULL);
+
+        struct whisper_context_params cparams = whisper_context_default_params();
+        cparams.use_gpu = use_gpu;
+        cparams.flash_attn = true;
+        cparams.dtw_aheads_preset = WHISPER_AHEADS_LARGE_V3_TURBO;
+        struct whisper_context *ctx = whisper_init_from_file_with_params(model_path, cparams);
+        if (!ctx)
+        {
+            fprintf(stderr, "Failed to initialize whisper context.\n");
+            return 1;
+        }
+
+        struct whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+        wparams.language = language;
+        wparams.n_threads = 4;
+        wparams.strategy = WHISPER_SAMPLING_BEAM_SEARCH;
+        wparams.beam_search.beam_size = 5;
+
+        if (whisper_full_parallel(ctx, wparams, audioBufferConverted, framesReadOut, 1) != 0)
+        {
+            fprintf(stderr, "Failed to process audio\n");
+            free(audioBufferConverted);
+            whisper_free(ctx);
+            return 1;
+        }
+
+        char *output_filepath = (char *)malloc(strlen(filePath) + 1);
+        strcpy(output_filepath, filePath);
+        char *extension = strstr(output_filepath, dot);
+        strcpy(extension, ".txt");
+        FILE *outfile = fopen(output_filepath, "w");
+        printf("Transcription saved to: %s\n", output_filepath);
+
+        const int segments = whisper_full_n_segments(ctx);
+        for (int i = 0; i < segments; i++)
+        {
+            const char *text = whisper_full_get_segment_text(ctx, i);
+            printf("%s\n", text);
+            fprintf(outfile, "%s\n", text);
+        }
+        fclose(outfile);
+        free(audioBuffer);
+        whisper_free(ctx);
     }
     else if (strcmp(argv[1], "record") == 0)
     {
@@ -440,12 +581,12 @@ int main(int argc, char **argv)
         {
             fprintf(stderr, "Failed to start primary device.\n");
         }
-        
+
         if (tcb_device_start(&tcbContext.secundary) != MA_SUCCESS)
         {
             fprintf(stderr, "Failed to start secundary device.\n");
         }
-        
+
         pthread_t thread;
         pthread_create(&thread, NULL, rb_read_thread, (void *)(&tcbContext));
 
@@ -504,7 +645,6 @@ int main(int argc, char **argv)
             wparams.n_threads = 4;
             wparams.strategy = WHISPER_SAMPLING_BEAM_SEARCH;
             wparams.beam_search.beam_size = 5;
-            
 
             if (whisper_full_parallel(ctx, wparams, audioBuffer, framesSize, 1) != 0)
             {
