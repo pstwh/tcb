@@ -365,7 +365,6 @@ int main(int argc, char **argv)
 
         char *language = "pt";
         bool use_gpu = false;
-        bool no_transcribe = false;
         for (int i = 0; i < argc; i++)
         {
             if (strcmp(argv[i], "--language") == 0 && i + 1 < argc)
@@ -377,12 +376,6 @@ int main(int argc, char **argv)
             if (strcmp(argv[i], "--use-gpu") == 0)
             {
                 use_gpu = true;
-                continue;
-            }
-
-            if (strcmp(argv[i], "--no-transcribe") == 0)
-            {
-                no_transcribe = true;
                 continue;
             }
         }
