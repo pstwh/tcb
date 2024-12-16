@@ -14,32 +14,49 @@
 
 #define MODEL_FILE "ggml-large-v3-turbo-q5_0.bin"
 
-typedef struct tcb_device tcb_device;
-typedef struct tcb_context tcb_context;
+typedef struct
+{
+    ma_device device;
+    ma_pcm_rb rb;
+    ma_data_converter converter;
+} tcb_device;
+
+typedef struct
+{
+    tcb_device primary;
+    tcb_device secundary;
+    ma_encoder encoder;
+} tcb_context;
+
+typedef struct {
+    char *home;
+    char *file_prefix;
+    char *file_path;
+    bool no_transcribe;
+    bool use_gpu;
+    char *language;
+    int primary_device_index;
+    int secundary_device_index;
+} tcb_params;
+
+typedef enum {
+    TCB_SUCCESS = 0,
+    TCB_ERROR = -1
+} tcb_result;
+
+tcb_result tcb_record(tcb_params *params);
+tcb_result tcb_transcribe(tcb_params *params);
 
 void rb_write_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uint32 frameCount);
 ma_result tcb_device_init(ma_device_id *device_id, tcb_device *device);
 ma_result tcb_device_start(tcb_device *device);
 void tcb_device_uninit(tcb_device *device);
-ma_result tcb_context_init(tcb_context *context, const char *pFilePath, ma_device_id *primary_device_id, ma_device_id *secundary_device_id);
+ma_result tcb_context_init(tcb_context *context, const char *pfile_path, ma_device_id *primary_device_id, ma_device_id *secundary_device_id);
 void tcb_context_uninit(tcb_context *context);
-void ensure_record_folder();
-void list_devices(ma_context *context);
+char* ensure_record_folder();
+void list_devices();
 void list_records();
 void *rb_read_thread(void *arg);
 
-struct tcb_device
-{
-    ma_device device;
-    ma_pcm_rb rb;
-    ma_data_converter converter;
-};
-
-struct tcb_context
-{
-    tcb_device primary;
-    tcb_device secundary;
-    ma_encoder encoder;
-};
 
 #endif
