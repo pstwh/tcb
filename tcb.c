@@ -139,6 +139,47 @@ char *ensure_record_folder()
     return home;
 }
 
+tcb_result tcb_get_capture_devices(char **capture_devices, size_t *device_count)
+{
+    ma_context context;
+    if (ma_context_init(NULL, 0, NULL, &context) != MA_SUCCESS)
+    {
+        fprintf(stderr, "Failed to initialize context.\n");
+        return TCB_ERROR;
+    }
+
+    ma_device_info *pCaptureDeviceInfos;
+    ma_uint32 captureDeviceCount;
+    if (ma_context_get_devices(&context, NULL, NULL, &pCaptureDeviceInfos, &captureDeviceCount) != MA_SUCCESS)
+    {
+        fprintf(stderr, "Failed to retrieve device information.\n");
+        ma_context_uninit(&context);
+        return TCB_ERROR;
+    }
+
+    *device_count = (captureDeviceCount > MAX_DEVICES) ? MAX_DEVICES : captureDeviceCount;
+
+    for (int i = 0; i < *device_count; ++i)
+    {
+        capture_devices[i] = (char *)malloc(256);
+        if (capture_devices[i] == NULL)
+        {
+            fprintf(stderr, "Memory allocation failed for device name.\n");
+            for (int j = 0; j < i; ++j)
+            {
+                free(capture_devices[j]);
+            }
+            ma_context_uninit(&context);
+            return TCB_ERROR;
+        }
+
+        strncpy(capture_devices[i], pCaptureDeviceInfos[i].name, 255);
+        capture_devices[i][255] = '\0';
+    }
+    ma_context_uninit(&context);
+    return TCB_SUCCESS;
+}
+
 void list_devices()
 {
     ma_context context;

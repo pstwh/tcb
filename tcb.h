@@ -12,6 +12,8 @@
 #define TARGET_CHANNELS 1
 #define TARGET_SAMPLE_RATE 16000
 
+#define MAX_DEVICES 64
+
 #define MODEL_FILE "ggml-large-v3-turbo-q5_0.bin"
 
 typedef struct
@@ -46,6 +48,8 @@ typedef enum {
 
 tcb_result tcb_record(tcb_params *params);
 tcb_result tcb_transcribe(tcb_params *params);
+tcb_result tcb_get_capture_devices(char **capture_devices, size_t *device_count);
+
 
 void rb_write_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uint32 frameCount);
 ma_result tcb_device_init(ma_device_id *device_id, tcb_device *device);
